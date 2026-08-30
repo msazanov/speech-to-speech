@@ -1134,7 +1134,9 @@ def test_disable_thinking_passes_extra_body():
 
     list(handler.process(_make_request("Hi")))
 
-    assert captured["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert captured["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False, "thinking_mode": "disabled"}
+    }
 
 
 def test_no_disable_thinking_omits_extra_body():
@@ -1184,7 +1186,9 @@ def test_responses_extra_body_uses_provider_fallback_only_without_reasoning_effo
     assert build_extra_body(None, True, "none") is None
     assert build_extra_body("https://api.openai.com/v1", True, "none") is None
     assert build_extra_body("http://provider/v1", True, "none") is None
-    assert build_extra_body("http://provider/v1", True, None) == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert build_extra_body("http://provider/v1", True, None) == {
+        "chat_template_kwargs": {"enable_thinking": False, "thinking_mode": "disabled"}
+    }
 
 
 def test_second_turn_flattens_assistant_history_for_responses():

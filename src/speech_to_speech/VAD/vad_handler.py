@@ -4,6 +4,7 @@ import logging
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from queue import Queue
 from threading import Event
 from typing import Any, TypeAlias
@@ -38,6 +39,14 @@ class _PendingShortSegment:
 # held for stitching, so sub-threshold bursts cannot sum past min_speech_ms
 # and fire a false barge-in.
 _SHORT_SEGMENT_MIN_FRAGMENT_MS = 100
+_SILERO_VAD_REPOSITORY = "snakers4/silero-vad:master"
+
+
+def _resolve_silero_vad_repository(torch_hub_dir: str | Path) -> str:
+    cached_repository = Path(torch_hub_dir) / "snakers4_silero-vad_master"
+    if cached_repository.is_dir():
+        return str(cached_repository)
+    return _SILERO_VAD_REPOSITORY
 
 
 # Optional import for audio enhancement
@@ -119,11 +128,13 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
             unanswered_reopen_ms,
             self.smart_turn_max_wait_ms if smart_turn else 0,
         )
+        silero_vad_repository = _resolve_silero_vad_repository(torch.hub.get_dir())
         self.model, _ = torch.hub.load(
-            "snakers4/silero-vad:master",
+            silero_vad_repository,
             "silero_vad",
             trust_repo=True,
             skip_validation=True,
+            source="local" if Path(silero_vad_repository).is_dir() else "github",
         )
         self.iterator = VADIterator(
             self.model,

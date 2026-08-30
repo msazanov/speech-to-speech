@@ -159,6 +159,53 @@ def test_supertonic_cli_config_is_normalized_for_the_handler():
     }
 
 
+def test_silero_cli_config_is_normalized_for_the_handler():
+    args = parse_arguments(
+        [
+            "--tts",
+            "silero",
+            "--silero_tts_speaker",
+            "xenia",
+            "--silero_tts_sample_rate",
+            "24000",
+            "--silero_tts_threads",
+            "6",
+            "--silero_tts_blocksize",
+            "512",
+            "--silero_tts_english_fallback",
+            "true",
+            "--silero_tts_english_voice",
+            "M1",
+        ]
+    )
+
+    assert args.tts_backend.name == "silero"
+    assert args.tts_backend.config == {
+        "speaker": "xenia",
+        "sample_rate": 24000,
+        "threads": 6,
+        "blocksize": 512,
+        "english_fallback": True,
+        "english_voice": "M1",
+        "gen_kwargs": {},
+    }
+
+
+def test_chat_completions_generation_fields_are_grouped_as_request_kwargs():
+    args = parse_arguments(
+        [
+            "--llm_backend",
+            "chat-completions",
+            "--responses_api_gen_max_tokens",
+            "64",
+            "--responses_api_gen_temperature",
+            "0.2",
+        ]
+    )
+
+    assert args.llm_backend.config["gen_kwargs"] == {"max_tokens": 64, "temperature": 0.2}
+
+
 def test_audio_input_validation_uses_registry_capability_not_backend_name():
     spec = BackendSpec(
         "future-audio-backend",
@@ -237,6 +284,35 @@ def test_openai_stt_backend_constructs_through_registry(monkeypatch):
     stt = create_backend_handler(args.stt_backend, _context())
 
     assert isinstance(stt, OpenAICompatibleSTTHandler)
+
+
+def test_gigaam_onnx_backend_normalizes_cpu_configuration():
+    args = parse_arguments(
+        [
+            "--stt",
+            "gigaam-onnx",
+            "--gigaam_onnx_stt_model_name",
+            "gigaam-multilingual-ctc",
+            "--gigaam_onnx_stt_quantization",
+            "int8",
+            "--gigaam_onnx_stt_provider",
+            "CPUExecutionProvider",
+            "--gigaam_onnx_stt_threads",
+            "6",
+            "--gigaam_onnx_stt_language",
+            "auto",
+        ]
+    )
+
+    assert args.stt_backend.name == "gigaam-onnx"
+    assert args.stt_backend.config == {
+        "model_name": "gigaam-multilingual-ctc",
+        "quantization": "int8",
+        "provider": "CPUExecutionProvider",
+        "threads": 6,
+        "language": "auto",
+        "gen_kwargs": {},
+    }
 
 
 def test_new_stt_backend_gets_transcription_notifier_by_default(monkeypatch):

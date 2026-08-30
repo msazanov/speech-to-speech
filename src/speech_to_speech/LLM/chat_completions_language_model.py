@@ -342,7 +342,9 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         return self._chat_messages(active_chat, audio_content_type=self.audio_content_type)
 
     def _build_optional_kwargs(self, req_tools: Any, req_tool_choice: Any) -> dict[str, Any]:
-        return _build_chat_optional_kwargs(req_tools, req_tool_choice)
+        optional_kwargs = {key: value for key, value in self.gen_kwargs.items() if value is not None}
+        optional_kwargs.update(_build_chat_optional_kwargs(req_tools, req_tool_choice))
+        return optional_kwargs
 
     def _request(self, api_input: list[dict[str, Any]], optional_kwargs: dict[str, Any]) -> Any:
         return _request_chat_completions(

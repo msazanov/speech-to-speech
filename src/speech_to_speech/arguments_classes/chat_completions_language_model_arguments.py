@@ -24,6 +24,15 @@ class ChatCompletionsLanguageModelHandlerArguments(ResponsesApiLanguageModelHand
             "help": "Provider-specific reasoning level sent as extra_body={'reasoning_effort': <value>} on the "
             "Chat Completions request. Use to disable reasoning on providers where "
             "chat_template_kwargs.enable_thinking is ignored (e.g. 'none' / 'low'). When unset, falls back to "
-            "the disable_thinking behaviour (chat_template_kwargs.enable_thinking=false). Default is None."
+            "the disable_thinking behaviour (chat_template_kwargs.enable_thinking=false and "
+            "thinking_mode='disabled'). Default is None."
         },
+    )
+    responses_api_gen_max_tokens: Optional[int] = field(
+        default=None,
+        metadata={"help": "Maximum tokens for text Chat Completions requests. Default is provider-defined."},
+    )
+    responses_api_gen_temperature: Optional[float] = field(
+        default=None,
+        metadata={"help": "Sampling temperature for text Chat Completions requests. Default is provider-defined."},
     )

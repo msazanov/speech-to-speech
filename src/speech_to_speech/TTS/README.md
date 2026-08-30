@@ -12,6 +12,7 @@ Runtime-supported values in `s2s_pipeline.py`:
 - `qwen3` → `qwen3_tts_handler.py`
 - `openai` → `openai_compatible_handler.py`
 - `supertonic` → `supertonic_tts_handler.py`
+- `silero` → `silero_tts_handler.py`
 
 Deprecated TTS implementations, including MeloTTS, live in [`../../../archive/TTS`](../../../archive/TTS) and are no longer wired into `s2s_pipeline.py`.
 
@@ -266,6 +267,29 @@ Install the optional dependency with:
 
 ```bash
 pip install "speech-to-speech[supertonic]"
+```
+
+### 9) Silero v5.5 RU (`--tts silero`)
+
+Primary args prefix: `--silero_tts_*`
+
+```bash
+speech-to-speech serve \
+  --tts silero \
+  --silero_tts_speaker xenia \
+  --silero_tts_sample_rate 24000 \
+  --silero_tts_threads 6 \
+  --silero_tts_english_fallback true
+```
+
+The backend runs pinned Silero `v5_5_ru` on CPU, converts its 24 kHz float
+output to fixed 16 kHz `int16` blocks, and checks cancellation before emitting
+audio. Russian voices are `aidar`, `baya`, `kseniya`, `xenia`, and `eugene`.
+When the per-utterance language is explicitly English, Supertonic is loaded
+lazily and reused; it does not consume RAM in a Russian-only session.
+
+```bash
+pip install "speech-to-speech[silero,supertonic]"
 ```
 
 ## Setup

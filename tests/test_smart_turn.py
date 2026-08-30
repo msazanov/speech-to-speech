@@ -69,7 +69,7 @@ def test_inference_failure_uses_default_speculative_grace() -> None:
     assert len(analyzer.calls) == 1
 
 
-def test_silero_load_pins_cached_master_ref(monkeypatch) -> None:
+def test_silero_load_prefers_existing_torch_cache(monkeypatch, tmp_path) -> None:
     class FakeSileroModel:
         def reset_states(self) -> None:
             pass
@@ -81,6 +81,9 @@ def test_silero_load_pins_cached_master_ref(monkeypatch) -> None:
         return FakeSileroModel(), None
 
     monkeypatch.setattr(torch.hub, "load", fake_load)
+    cached_repository = tmp_path / "snakers4_silero-vad_master"
+    cached_repository.mkdir()
+    monkeypatch.setattr(torch.hub, "get_dir", lambda: str(tmp_path))
     handler = object.__new__(VADHandler)
 
     handler.setup(
@@ -91,9 +94,9 @@ def test_silero_load_pins_cached_master_ref(monkeypatch) -> None:
 
     assert load_calls == [
         (
-            "snakers4/silero-vad:master",
+            str(cached_repository),
             "silero_vad",
-            {"trust_repo": True, "skip_validation": True},
+            {"trust_repo": True, "skip_validation": True, "source": "local"},
         )
     ]
 

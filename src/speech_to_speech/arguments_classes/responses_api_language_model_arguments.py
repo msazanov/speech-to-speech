@@ -32,7 +32,8 @@ class ResponsesApiLanguageModelHandlerArguments(LanguageModelBaseArguments):
         default=True,
         metadata={
             "help": "Disable provider-side thinking/reasoning when supported by the OpenAI-compatible backend. "
-            "For Together Qwen3.5 models this sends chat_template_kwargs.enable_thinking=false."
+            "For compatible providers this sends chat_template_kwargs.enable_thinking=false and "
+            "thinking_mode='disabled'."
         },
     )
     responses_api_reasoning_effort: Optional[str] = field(

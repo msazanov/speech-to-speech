@@ -17,6 +17,7 @@ from speech_to_speech.arguments_classes.facebookmms_tts_arguments import Faceboo
 from speech_to_speech.arguments_classes.faster_whisper_stt_arguments import (
     FasterWhisperSTTHandlerArguments,
 )
+from speech_to_speech.arguments_classes.gigaam_onnx_stt_arguments import GigaAMONNXSTTHandlerArguments
 from speech_to_speech.arguments_classes.kokoro_tts_arguments import KokoroTTSHandlerArguments
 from speech_to_speech.arguments_classes.language_model_arguments import LanguageModelHandlerArguments
 from speech_to_speech.arguments_classes.mlx_audio_whisper_arguments import (
@@ -34,6 +35,7 @@ from speech_to_speech.arguments_classes.qwen3_tts_arguments import Qwen3TTSHandl
 from speech_to_speech.arguments_classes.responses_api_language_model_arguments import (
     ResponsesApiLanguageModelHandlerArguments,
 )
+from speech_to_speech.arguments_classes.silero_tts_arguments import SileroTTSHandlerArguments
 from speech_to_speech.arguments_classes.supertonic_tts_arguments import SupertonicTTSHandlerArguments
 from speech_to_speech.arguments_classes.whisper_stt_arguments import WhisperSTTHandlerArguments
 from speech_to_speech.pipeline.cancel_scope import CancelScope
@@ -363,6 +365,18 @@ STT_BACKENDS = build_backend_registry(
             required_extra="faster-whisper",
         ),
         BackendSpec(
+            "gigaam-onnx",
+            "stt",
+            GigaAMONNXSTTHandlerArguments,
+            _simple_handler_factory(
+                "speech_to_speech.STT.gigaam_onnx_handler",
+                "GigaAMONNXSTTHandler",
+                attach_speculative_turns=True,
+            ),
+            config_prefix="gigaam_onnx_stt",
+            required_extra="gigaam",
+        ),
+        BackendSpec(
             "parakeet-tdt",
             "stt",
             ParakeetTDTSTTHandlerArguments,
@@ -538,6 +552,19 @@ TTS_BACKENDS = build_backend_registry(
             ),
             config_prefix="supertonic_tts",
             required_extra="supertonic",
+        ),
+        BackendSpec(
+            "silero",
+            "tts",
+            SileroTTSHandlerArguments,
+            _simple_handler_factory(
+                "speech_to_speech.TTS.silero_tts_handler",
+                "SileroTTSHandler",
+                setup_should_listen=True,
+                context_kwargs=True,
+            ),
+            config_prefix="silero_tts",
+            required_extra="silero",
         ),
     ],
 )

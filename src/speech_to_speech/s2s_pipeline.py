@@ -13,7 +13,6 @@ from threading import Event
 from types import FrameType
 from typing import Any, Literal, Optional, Sequence
 
-import nltk
 import torch
 from rich.console import Console
 from transformers import HfArgumentParser
@@ -35,6 +34,7 @@ from speech_to_speech.backend_registry import (
     HandlerContext,
     create_backend_handler,
 )
+from speech_to_speech.nltk_resources import ensure_required_nltk_resources
 from speech_to_speech.pipeline.cancel_scope import CancelScope
 from speech_to_speech.pipeline.queue_types import (
     AudioInItem,
@@ -55,15 +55,7 @@ from speech_to_speech.STT.transcription_notifier import TranscriptionNotifier
 from speech_to_speech.utils.thread_manager import ThreadManager
 from speech_to_speech.VAD.vad_handler import VADHandler
 
-# Ensure that the necessary NLTK resources are available
-try:
-    nltk.data.find("tokenizers/punkt_tab")
-except (LookupError, OSError):
-    nltk.download("punkt_tab")
-try:
-    nltk.data.find("tokenizers/averaged_perceptron_tagger_eng")
-except (LookupError, OSError):
-    nltk.download("averaged_perceptron_tagger_eng")
+ensure_required_nltk_resources()
 
 # caching allows ~50% compilation time reduction
 # see https://docs.google.com/document/d/1y5CRfMLdwEoF1nTk9q8qEu1mgMUuUtvhklPKJ2emLU8/edit#heading=h.o2asbxsrp1ma

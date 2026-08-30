@@ -100,7 +100,7 @@ class _FakeClient:
         return self
 
 
-def _make_handler(stream=True, *, base_url="http://fake/v1", reasoning_effort=None):
+def _make_handler(stream=True, *, base_url="http://fake/v1", reasoning_effort=None, gen_kwargs=None):
     """Build a handler whose warmup hits the fake client (no network)."""
     orig_openai = base_mod.OpenAI
     base_mod.OpenAI = _FakeClient
@@ -117,6 +117,7 @@ def _make_handler(stream=True, *, base_url="http://fake/v1", reasoning_effort=No
                 disable_thinking=True,
                 reasoning_effort=reasoning_effort,
                 compact_history=False,
+                gen_kwargs=gen_kwargs or {},
             ),
         )
     finally:
@@ -128,6 +129,16 @@ def test_warmup_uses_request_scoped_sdk_retries():
     handler = _make_handler()
 
     assert handler.client.last_options == {"max_retries": base_mod.WARMUP_MAX_RETRIES}
+
+
+def test_text_request_forwards_configured_generation_limits():
+    handler = _make_handler(stream=False, gen_kwargs={"max_tokens": 64, "temperature": 0.2})
+
+    _drive(handler, user="Ответь кратко")
+
+    captured = handler.client.chat.completions.last_kwargs
+    assert captured["max_tokens"] == 64
+    assert captured["temperature"] == 0.2
 
 
 def _chunk(content=None, tool_calls=None, usage=None):
@@ -200,12 +211,13 @@ def test_to_chat_tool_choice():
 
 def test_build_extra_body_variants():
     f = ChatCompletionsApiModelHandler._build_extra_body
-    assert f("http://x/v1", True, None) == {"chat_template_kwargs": {"enable_thinking": False}}
+    disabled = {"chat_template_kwargs": {"enable_thinking": False, "thinking_mode": "disabled"}}
+    assert f("http://x/v1", True, None) == disabled
     assert f("http://x/v1", True, "none") == {"reasoning_effort": "none"}  # explicit effort wins
     assert f("https://api.openai.com/v1", True, "none") == {"reasoning_effort": "none"}
     assert f("https://api.openai.com/v1/", True, "none") == {"reasoning_effort": "none"}
     assert f(None, True, "none") == {"reasoning_effort": "none"}
-    assert f("http://x/v1", True, "") == {"chat_template_kwargs": {"enable_thinking": False}}  # empty effort ignored
+    assert f("http://x/v1", True, "") == disabled  # empty effort ignored
     assert f("http://x/v1", False, None) is None
     assert f(None, True, None) is None
 

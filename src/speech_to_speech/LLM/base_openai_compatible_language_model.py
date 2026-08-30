@@ -250,8 +250,9 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         """Build the provider-specific ``extra_body`` used to disable reasoning.
 
         Providers differ in how reasoning is turned off: vLLM/Qwen honour
-        ``chat_template_kwargs.enable_thinking=false``, while others (e.g. GLM via
-        the HF router) ignore that and require ``reasoning_effort='none'``. A
+        ``chat_template_kwargs.enable_thinking=false``; FreeToken/Ornith additionally
+        requires ``thinking_mode='disabled'``. Other providers (e.g. GLM via the HF
+        router) ignore those template arguments and require ``reasoning_effort='none'``. A
         non-empty ``reasoning_effort`` therefore takes precedence, including for
         official OpenAI requests; otherwise we fall back to the provider-specific
         chat-template flag, which the official OpenAI server does not accept.
@@ -261,7 +262,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         if base_url is None or cls._is_official_openai(base_url):
             return None
         if disable_thinking:
-            return {"chat_template_kwargs": {"enable_thinking": False}}
+            return {
+                "chat_template_kwargs": {
+                    "enable_thinking": False,
+                    "thinking_mode": "disabled",
+                }
+            }
         return None
 
     # ── subclass hooks ──────────────────────────────────────────────────────--

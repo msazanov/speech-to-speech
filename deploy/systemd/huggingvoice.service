@@ -1,0 +1,21 @@
+[Unit]
+Description=HuggingVoice Russian-first realtime pipeline
+Requires=huggingvoice-gemma.service
+After=huggingvoice-gemma.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/random/dev/huggingvoice
+Environment=PYTHONUNBUFFERED=1
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+ExecStartPre=/home/random/dev/huggingvoice/scripts/wait-for-llm.sh http://127.0.0.1:1919/v1 gemma4-e2b-q4_0
+ExecStart=/home/random/dev/huggingvoice/scripts/run-omniroute-ru-en.sh
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=240
+TimeoutStopSec=45
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=default.target

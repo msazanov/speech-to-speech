@@ -141,6 +141,9 @@ pip install "speech-to-speech[kokoro]"          # Kokoro-82M TTS on non-macOS
 pip install "speech-to-speech[pocket]"          # Pocket TTS
 pip install "speech-to-speech[chattts]"         # ChatTTS
 pip install "speech-to-speech[omnivoice]"       # OmniVoice TTS (CUDA, Intel XPU, or Apple Silicon)
+pip install "speech-to-speech[gigaam]"          # GigaAM ONNX STT on CPU
+pip install "speech-to-speech[silero]"          # Silero v5.5 Russian TTS on CPU
+pip install "speech-to-speech[supertonic]"       # Multilingual ONNX TTS
 pip install "speech-to-speech[faster-whisper]"  # Faster Whisper STT
 pip install "speech-to-speech[whisper-mlx]"     # Lightning Whisper MLX STT on macOS
 pip install "speech-to-speech[paraformer]"      # Paraformer STT through FunASR
@@ -172,6 +175,7 @@ This installs the package in editable mode and makes the `speech-to-speech` CLI 
 | STT | [Lightning Whisper MLX](https://github.com/mustafaaljadery/lightning-whisper-mlx) | Apple Silicon | `whisper-mlx` |
 | STT | [MLX Audio Whisper](https://github.com/huggingface/mlx-audio) | Apple Silicon | built-in on macOS |
 | STT | [Paraformer](https://github.com/modelscope/FunASR) | CUDA / CPU | `paraformer` |
+| STT | GigaAM ONNX | CPU | `gigaam` |
 | STT | OpenAI-compatible `/v1/audio/transcriptions` endpoint | local or remote HTTP server | built-in |
 | LLM | OpenAI-compatible API (`responses-api`, `chat-completions`) | hosted providers or self-hosted servers | built-in |
 | LLM | [Transformers](https://huggingface.co/models?pipeline_tag=text-generation&sort=trending) | CUDA / CPU | built-in |
@@ -181,6 +185,8 @@ This installs the package in editable mode and makes the `speech-to-speech` CLI 
 | TTS | [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) | CPU / CUDA | `pocket` |
 | TTS | [ChatTTS](https://github.com/2noise/ChatTTS) | CUDA / CPU | `chattts` |
 | TTS | [OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) | CUDA / Intel XPU / Apple Silicon | `omnivoice` |
+| TTS | [Silero v5.5 RU](https://github.com/snakers4/silero-models) | CPU | `silero` |
+| TTS | [Supertonic](https://github.com/supertone-inc/supertonic) | CPU | `supertonic` |
 | TTS | [MMS TTS](https://huggingface.co/docs/transformers/model_doc/mms) | CUDA / CPU | built-in |
 | TTS | OpenAI-compatible `/v1/audio/speech` endpoint | local or remote HTTP server | built-in |
 

@@ -1,0 +1,40 @@
+[Unit]
+Description=Gemma 4 E2B QAT Q4_0 for HuggingVoice
+After=network-online.target
+Wants=network-online.target
+Conflicts=freetoken-ornith.service
+ConditionFileIsExecutable=/opt/llama-cpp/bin/llama-server
+ConditionPathExists=/home/random/dev/huggingvoice-llm-bench/models/gemma4-e2b/gemma-4-E2B_q4_0-it.gguf
+
+[Service]
+Type=simple
+Environment=CUDA_VISIBLE_DEVICES=0
+ExecStart=/opt/llama-cpp/bin/llama-server \
+  --model /home/random/dev/huggingvoice-llm-bench/models/gemma4-e2b/gemma-4-E2B_q4_0-it.gguf \
+  --alias gemma4-e2b-q4_0 \
+  --host 127.0.0.1 \
+  --port 1919 \
+  --ctx-size 4096 \
+  --gpu-layers all \
+  --fit off \
+  --flash-attn on \
+  --parallel 1 \
+  --batch-size 2048 \
+  --ubatch-size 512 \
+  --threads 6 \
+  --threads-batch 6 \
+  --cache-ram 1024 \
+  --cache-prompt \
+  --reasoning off \
+  --reasoning-budget 0 \
+  --metrics \
+  --no-ui \
+  --perf
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=180
+TimeoutStopSec=45
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=default.target
