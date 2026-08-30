@@ -26,23 +26,26 @@ assume that every OmniRoute route implements the Responses API event protocol.
 The initial pipeline remains loopback-only:
 
 1. Silero VAD detects speech boundaries.
-2. Parakeet TDT transcribes Russian or English speech locally.
+2. Faster Whisper Tiny transcribes Russian or English speech locally with
+   CPU INT8 inference and per-turn language detection.
 3. HuggingVoice sends the text conversation to OmniRoute at
    `127.0.0.1:20128` using streaming Chat Completions.
-4. Qwen3-TTS synthesizes the response locally.
+4. Supertonic 3 synthesizes the response locally with its CPU ONNX runtime.
 5. The OpenAI Realtime-compatible server listens on
    `127.0.0.1:8765`; it is not exposed to the LAN.
 
-The first reproducible profile is CPU-safe because the host's RTX 2070 Mobile
-is present but `nvidia-smi` cannot currently communicate with the driver. GPU
-enablement is a later profile change after the CUDA runtime is healthy; it is
-not hidden inside the bootstrap.
+The reproducible profile is deliberately CPU-only because the host must reserve
+VRAM and RAM for a large local LLM. The host's RTX 2070 Mobile is also present
+but `nvidia-smi` cannot currently communicate with the driver. A measured warm
+server uses about 1.63 GB RSS, down from about 5.9 GB for the initial
+Parakeet/Qwen profile. GPU enablement is not hidden inside the bootstrap.
 
 ## Language policy
 
-Parakeet TDT runs with automatic language detection and supports both `ru` and
-`en`. `enable_lang_prompt` is enabled so a confidently detected language is
-propagated to the LLM. The session prompt applies these rules:
+The multilingual Faster Whisper `tiny` checkpoint runs with automatic language
+detection and supports both `ru` and `en`. `enable_lang_prompt` is enabled so a
+confidently detected language is propagated to the LLM. The session prompt
+applies these rules:
 
 - answer in Russian by default;
 - answer in English when the user's current turn is clearly English;
@@ -50,8 +53,9 @@ propagated to the LLM. The session prompt applies these rules:
   product names, or English technical terms;
 - keep spoken answers concise and natural.
 
-Qwen3-TTS uses automatic target-language selection so the synthesized voice
-follows the LLM output language.
+Supertonic 3 runs with the language-agnostic fallback (`na`) and also accepts
+the detected per-turn `ru` or `en` code, so the synthesized voice follows the
+LLM output language.
 
 ## Files
 
@@ -102,16 +106,16 @@ workflow. It does not edit system Python. The verification sequence is:
    microphone test.
 7. Run microphone/speaker smoke only when the desktop audio session is visible.
 
-Model downloads and first warm-up can be several gigabytes and take longer than
-the package installation. Any failure must retain the exact command and error;
+The active speech-model caches are about 75 MB for Faster Whisper Tiny and
+386 MB for Supertonic 3. Any failure must retain the exact command and error;
 the launcher must not silently switch to a remote STT or TTS provider.
 
 ## Acceptance criteria
 
 - The checkout remains based on the pinned upstream commit.
 - No credential or `.env` secret is committed.
-- Configuration parsing selects Parakeet TDT, OmniRoute Chat Completions, and
-  Qwen3-TTS with automatic RU/EN handling.
+- Configuration parsing selects Faster Whisper Tiny/INT8, OmniRoute Chat
+  Completions, and Supertonic 3 with automatic RU/EN handling.
 - The server binds to loopback only.
 - A real OmniRoute completion answers a Russian prompt in Russian and a clearly
   English prompt in English.

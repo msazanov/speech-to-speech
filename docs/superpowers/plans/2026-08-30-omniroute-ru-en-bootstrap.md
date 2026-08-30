@@ -4,7 +4,7 @@
 
 **Goal:** Produce and verify a reproducible, loopback-only HuggingVoice profile that sends LLM traffic through local OmniRoute and defaults to Russian while retaining English fallback.
 
-**Architecture:** Keep the pinned upstream source unchanged and add a small deployment overlay: one JSON runtime profile, two tested shell entrypoints, and an operator guide. Use local Parakeet TDT and Qwen3-TTS on CPU for the first safe profile, with streaming Chat Completions sent to OmniRoute `auto/chat`.
+**Architecture:** Keep the pinned upstream source unchanged and add a small deployment overlay: one JSON runtime profile, two tested shell entrypoints, and an operator guide. Use multilingual Faster Whisper Tiny with CPU INT8 and Supertonic 3 ONNX on CPU, with streaming Chat Completions sent to OmniRoute `auto/chat`.
 
 **Tech Stack:** Python 3.12, uv, pytest, Bash, HuggingVoice `speech-to-speech`, OpenAI-compatible Chat Completions, OmniRoute.
 
@@ -16,6 +16,7 @@
 - Keep both HuggingVoice and OmniRoute listeners on loopback addresses.
 - Store no API token, provider credential, or `.env` secret in Git.
 - Russian is the default response language; clearly English turns receive English responses.
+- Reserve VRAM for the local LLM and keep the speech path CPU-only with a low-RAM profile.
 - Do not claim fully local LLM inference while `auto/chat` routes to `openrouter/free`.
 - Do not claim a voice-path smoke while NVIDIA or desktop audio is unavailable.
 
@@ -121,15 +122,15 @@ def test_profile_routes_chat_completions_to_loopback_omniroute():
 
 def test_profile_uses_local_ru_en_speech_backends():
     parsed = parsed_profile()
-    assert parsed.module_kwargs.stt == "parakeet-tdt"
+    assert parsed.module_kwargs.stt == "faster-whisper"
     assert parsed.stt_backend.config["device"] == "cpu"
-    assert parsed.stt_backend.config["compute_type"] == "float32"
-    assert parsed.stt_backend.config["language"] == "auto"
+    assert parsed.stt_backend.config["model_name"] == "tiny"
+    assert parsed.stt_backend.config["compute_type"] == "int8"
+    assert parsed.stt_backend.config["gen_kwargs"]["language"] == "auto"
     assert parsed.llm_backend.config["enable_lang_prompt"] is True
-    assert parsed.module_kwargs.tts == "qwen3"
-    assert parsed.tts_backend.config["device"] == "cpu"
-    assert parsed.tts_backend.config["backend"] == "ggml"
-    assert parsed.tts_backend.config["language"] == "auto"
+    assert parsed.module_kwargs.tts == "supertonic"
+    assert parsed.tts_backend.config["voice"] == "M1"
+    assert parsed.tts_backend.config["lang"] == "na"
 
 
 def test_profile_prompt_prefers_russian_without_forcing_english_terms():
@@ -155,14 +156,15 @@ Create `config/omniroute-ru-en.json` with these effective values:
 
 ```json
 {
-  "stt": "parakeet-tdt",
+  "stt": "faster-whisper",
   "llm_backend": "chat-completions",
-  "tts": "qwen3",
+  "tts": "supertonic",
   "host": "127.0.0.1",
   "port": 8765,
-  "parakeet_tdt_device": "cpu",
-  "parakeet_tdt_compute_type": "float32",
-  "parakeet_tdt_language": "auto",
+  "faster_whisper_stt_model_name": "tiny",
+  "faster_whisper_stt_device": "cpu",
+  "faster_whisper_stt_compute_type": "int8",
+  "faster_whisper_stt_gen_language": "auto",
   "model_name": "auto/chat",
   "responses_api_base_url": "http://127.0.0.1:20128/v1",
   "responses_api_stream": true,
@@ -173,10 +175,8 @@ Create `config/omniroute-ru-en.json` with these effective values:
   "enable_lang_prompt": true,
   "compact_history": false,
   "stream_batch_sentences": 1,
-  "qwen3_tts_device": "cpu",
-  "qwen3_tts_backend": "ggml",
-  "qwen3_tts_ggml_quantization": "Q4_K_M",
-  "qwen3_tts_language": "auto"
+  "supertonic_tts_voice": "M1",
+  "supertonic_tts_lang": "na"
 }
 ```
 
@@ -213,7 +213,8 @@ git commit -m "feat: add Russian-first OmniRoute profile"
 Extend `tests/test_local_bootstrap_config.py` with subprocess tests that:
 
 1. Set `UV_BIN` to a temporary executable which records each argv; run
-   `scripts/bootstrap-local.sh`; expect calls `sync --locked --python 3.12` and
+   `scripts/bootstrap-local.sh`; expect calls
+   `sync --locked --extra supertonic --extra faster-whisper --python 3.12` and
    `run python -m nltk.downloader punkt_tab averaged_perceptron_tagger_eng`.
 2. Set `HUGGINGVOICE_BIN` to a temporary executable which prints argv; run
    `scripts/run-omniroute-ru-en.sh`; expect exactly `serve` and the absolute
@@ -239,7 +240,7 @@ set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 uv_bin="${UV_BIN:-uv}"
 cd "$repo_root"
-"$uv_bin" sync --locked --python 3.12
+"$uv_bin" sync --locked --extra supertonic --extra faster-whisper --python 3.12
 "$uv_bin" run python -m nltk.downloader punkt_tab averaged_perceptron_tagger_eng
 ```
 
