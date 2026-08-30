@@ -27,15 +27,15 @@ def test_profile_routes_chat_completions_to_loopback_omniroute():
 def test_profile_uses_local_ru_en_speech_backends():
     parsed = parsed_profile()
 
-    assert parsed.module_kwargs.stt == "parakeet-tdt"
+    assert parsed.module_kwargs.stt == "faster-whisper"
     assert parsed.stt_backend.config["device"] == "cpu"
-    assert parsed.stt_backend.config["compute_type"] == "float32"
-    assert parsed.stt_backend.config["language"] == "auto"
+    assert parsed.stt_backend.config["model_name"] == "tiny"
+    assert parsed.stt_backend.config["compute_type"] == "int8"
+    assert parsed.stt_backend.config["gen_kwargs"]["language"] == "auto"
     assert parsed.llm_backend.config["enable_lang_prompt"] is True
-    assert parsed.module_kwargs.tts == "qwen3"
-    assert parsed.tts_backend.config["device"] == "cpu"
-    assert parsed.tts_backend.config["backend"] == "ggml"
-    assert parsed.tts_backend.config["language"] == "auto"
+    assert parsed.module_kwargs.tts == "supertonic"
+    assert parsed.tts_backend.config["voice"] == "M1"
+    assert parsed.tts_backend.config["lang"] == "na"
 
 
 def test_profile_prompt_prefers_russian_without_forcing_english_terms():
@@ -68,6 +68,10 @@ def test_bootstrap_uses_locked_python_312_environment(tmp_path):
     assert completed.stdout.splitlines() == [
         "ARG=sync",
         "ARG=--locked",
+        "ARG=--extra",
+        "ARG=supertonic",
+        "ARG=--extra",
+        "ARG=faster-whisper",
         "ARG=--python",
         "ARG=3.12",
         "ARG=run",

@@ -1,12 +1,13 @@
 {
-  "stt": "parakeet-tdt",
+  "stt": "faster-whisper",
   "llm_backend": "chat-completions",
-  "tts": "qwen3",
+  "tts": "supertonic",
   "host": "127.0.0.1",
   "port": 8765,
-  "parakeet_tdt_device": "cpu",
-  "parakeet_tdt_compute_type": "float32",
-  "parakeet_tdt_language": "auto",
+  "faster_whisper_stt_model_name": "tiny",
+  "faster_whisper_stt_device": "cpu",
+  "faster_whisper_stt_compute_type": "int8",
+  "faster_whisper_stt_gen_language": "auto",
   "model_name": "auto/chat",
   "responses_api_base_url": "http://127.0.0.1:20128/v1",
   "responses_api_stream": true,
@@ -17,8 +18,6 @@
   "enable_lang_prompt": true,
   "compact_history": false,
   "stream_batch_sentences": 1,
-  "qwen3_tts_device": "cpu",
-  "qwen3_tts_backend": "ggml",
-  "qwen3_tts_ggml_quantization": "Q4_K_M",
-  "qwen3_tts_language": "auto"
+  "supertonic_tts_voice": "M1",
+  "supertonic_tts_lang": "na"
 }
