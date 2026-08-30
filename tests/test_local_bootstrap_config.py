@@ -1,9 +1,8 @@
 import os
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 from speech_to_speech.s2s_pipeline import parse_arguments
-
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = ROOT / "config" / "omniroute-ru-en.json"
@@ -17,7 +16,7 @@ def test_profile_routes_chat_completions_to_loopback_omniroute():
     parsed = parsed_profile()
 
     assert parsed.module_kwargs.llm_backend == "chat-completions"
-    assert parsed.llm_backend.config["model_name"] == "auto/chat"
+    assert parsed.llm_backend.config["model_name"] == "kmc/k3-256k"
     assert parsed.llm_backend.config["base_url"] == "http://127.0.0.1:20128/v1"
     assert parsed.llm_backend.config["api_key"] is None
     assert parsed.realtime_server_kwargs.host == "127.0.0.1"
@@ -29,9 +28,11 @@ def test_profile_uses_local_ru_en_speech_backends():
 
     assert parsed.module_kwargs.stt == "faster-whisper"
     assert parsed.stt_backend.config["device"] == "cpu"
-    assert parsed.stt_backend.config["model_name"] == "tiny"
+    assert parsed.stt_backend.config["model_name"] == "ammaraldirawi/faster-whisper-small-ru-int8"
     assert parsed.stt_backend.config["compute_type"] == "int8"
     assert parsed.stt_backend.config["gen_kwargs"]["language"] == "auto"
+    assert parsed.module_kwargs.enable_live_transcription is False
+    assert parsed.vad_handler_kwargs.min_silence_ms == 500
     assert parsed.llm_backend.config["enable_lang_prompt"] is True
     assert parsed.module_kwargs.tts == "supertonic"
     assert parsed.tts_backend.config["voice"] == "M1"

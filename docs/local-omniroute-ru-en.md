@@ -4,8 +4,9 @@
 LLM:
 
 - VAD: Silero + Smart Turn, CPU;
-- STT: multilingual Faster Whisper Tiny, CPU/INT8, автоопределение `ru`/`en`;
-- LLM: локальный шлюз OmniRoute по OpenAI Chat Completions;
+- STT: Faster Whisper Small, дообученный на русском и квантованный в INT8,
+  автоопределение `ru`/`en`;
+- LLM: тестовый маршрут `kmc/k3-256k` через локальный шлюз OmniRoute;
 - TTS: Supertonic 3, CPU ONNX, русский и английский;
 - Realtime API: только `127.0.0.1:8765`.
 
@@ -21,8 +22,8 @@ cd /home/random/dev/huggingvoice
 
 Первый старт скачивает активные модели:
 
-- Faster Whisper Tiny: около 75 МБ в
-  `~/.cache/huggingface/hub/models--Systran--faster-whisper-tiny`;
+- `ammaraldirawi/faster-whisper-small-ru-int8`: около 254 МБ в
+  `~/.cache/huggingface/hub/models--ammaraldirawi--faster-whisper-small-ru-int8`;
 - Supertonic 3: около 386 МБ в `~/.cache/supertonic3`;
 - Smart Turn и Silero VAD — в стандартные кэши Hugging Face и Torch.
 
@@ -36,14 +37,15 @@ cd /home/random/dev/huggingvoice
 curl -fsSL http://127.0.0.1:20128/api/monitoring/health | jq '{status, version}'
 ```
 
-Ожидается `"status": "healthy"`. Профиль использует модель-маршрут
-`auto/chat`. На момент проверки OmniRoute выбирал для него `openrouter/free`,
-поэтому шлюз локальный, но LLM-инференс пока не гарантированно офлайн. После
-восстановления локального LLM-маршрута достаточно изменить только `model_name`
-в `config/omniroute-ru-en.json` и повторить русский/английский smoke-тест.
+Ожидается `"status": "healthy"`. Тестовый профиль закреплён за маршрутом
+`kmc/k3-256k`, чтобы не тратить 6–12 секунд на автоматический подбор провайдера
+для `auto/chat`. Шлюз работает локально; место выполнения LLM-инференса
+определяет конфигурация этого маршрута в OmniRoute. Для смены модели достаточно
+изменить `model_name` в `config/omniroute-ru-en.json` и повторить RU/EN
+smoke-тест.
 
-Параметр `responses_api_disable_thinking: true` обязателен для текущего
-маршрута: он не даёт служебному reasoning-тексту попасть в голосовой ответ.
+Параметр `responses_api_disable_thinking: true` не даёт служебному
+reasoning-тексту попасть в голосовой ответ.
 
 ## Запуск
 
@@ -92,21 +94,60 @@ uv run speech-to-speech talk \
 Отдельный CPU smoke Supertonic успешно синтезировал конечные аудиомассивы для
 `ru` и `en`.
 
+## Замкнутый акустический тест
+
+Скрипт заранее синтезирует одну русскую фразу через Supertonic, открывает
+системный микрофон, проигрывает фразу через системные динамики и ждёт результат
+от Realtime API. Аудио ответа ассистента намеренно не проигрывается, чтобы оно
+не попало в микрофон вторым пользовательским ходом.
+
+```bash
+cd /home/random/dev/huggingvoice
+uv run python scripts/acoustic_loopback_smoke.py
+```
+
+Другой эталон (не более 20 слов) и явные устройства:
+
+```bash
+uv run python scripts/acoustic_loopback_smoke.py \
+  --text "Ты меня хорошо слышишь и правильно понимаешь?" \
+  --input-device 7 \
+  --output-device 7
+```
+
+Отчёт содержит распознанный текст, WER, пословную точность, символьное
+сходство, пик микрофона и задержки STT/ответа. Первый одинаковый A/B-прогон на
+этом хосте показал эффект настройки VAD:
+
+- `min_silence_ms=64`: STT 10,306 с, WER 60%, полный цикл 21,308 с;
+- `min_silence_ms=500`: STT 4,527 с, WER 40%, полный цикл 17,608 с.
+
+Во втором прогоне одна фраза прошла одним STT-вызовом. После завершения речи
+оставшиеся измеренные узкие места: 4,527 с Faster Whisper, 3,581 с
+`kmc/k3-256k` и примерно 2,26 с от готового текста LLM до первого аудиоблока.
+Результат зависит от акустики помещения, громкости, размещения микрофона и
+текущей задержки провайдера OmniRoute.
+
 ## Ресурсы и известные ограничения
 
-На этом хосте прогретый процесс HuggingVoice занимал около 1,63 ГБ RSS. Это
-примерно на 72% меньше начального профиля Parakeet 0.6B + Qwen3-TTS
-(около 5,9 ГБ RSS). OmniRoute работает отдельным процессом и в измерение
-HuggingVoice не входит.
+Русская Large v3 Turbo оказалась слишком медленной на CPU этого хоста:
+12–17 секунд только на распознавание короткой реплики. Поэтому активный профиль
+использует русскую Small INT8. Live-transcription отключён: с Faster Whisper он
+повторно распознавал одну реплику сначала частично, затем целиком и добавлял
+около 3,8 секунды CPU-задержки. `min_silence_ms` увеличен с 64 до 500 мс:
+короткие естественные паузы больше не разрезают одну фразу на несколько ревизий
+с повторным запуском Whisper. Весь речевой тракт остаётся на CPU и не занимает
+VRAM; OmniRoute работает отдельным процессом и в измерение HuggingVoice не
+входит.
 
 GPU профиль намеренно не используется. `nvidia-smi` не связывается с драйвером,
 а локальный `ornith-q6.service` перезапускается. Полный PyTorch Qwen3-TTS также
 не подходит под бюджет RAM; готовое CPU GGML-колесо падало на CPU Intel
 i7-8750H после сообщения об отсутствии AMX.
 
-Интерактивный микрофон/динамики не проверялись из этой терминальной сессии,
-поскольку desktop PipeWire здесь недоступен. Серверный старт, loopback-порт,
-OmniRoute, русско-английская политика и CPU-синтез проверены отдельно.
+Интерактивный клиент проверен через desktop PipeWire с устройством №20.
+Конкретный номер устройства может измениться после перезапуска аудиосессии;
+без явного номера клиент использует системное устройство по умолчанию.
 
 Во время исследования были загружены, но больше не используются, кэши
 Parakeet (около 2,4 ГБ) и Qwen GGUF (около 1,4 ГБ). Их можно удалить вручную,
@@ -118,6 +159,7 @@ Parakeet (около 2,4 ГБ) и Qwen GGUF (около 1,4 ГБ). Их можн
 cd /home/random/dev/huggingvoice
 ./scripts/bootstrap-local.sh
 uv run pytest -q tests/test_local_bootstrap_config.py \
+  tests/test_acoustic_loopback_smoke.py \
   tests/test_cli_defaults.py tests/test_language_prompt.py
 NO_PROXY="${NO_PROXY:+${NO_PROXY},}10.255.255.1" uv run pytest -q
 bash -n scripts/bootstrap-local.sh scripts/run-omniroute-ru-en.sh
