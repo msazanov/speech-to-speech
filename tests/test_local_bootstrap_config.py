@@ -1,4 +1,6 @@
+import os
 from pathlib import Path
+import subprocess
 
 from speech_to_speech.s2s_pipeline import parse_arguments
 
@@ -42,3 +44,54 @@ def test_profile_prompt_prefers_russian_without_forcing_english_terms():
     assert "По умолчанию отвечай по-русски" in prompt
     assert "явно говорит по-английски" in prompt
     assert "термин" in prompt
+
+
+def make_argv_recorder(tmp_path: Path) -> Path:
+    recorder = tmp_path / "record-argv"
+    recorder.write_text('#!/usr/bin/env bash\nprintf "ARG=%s\\n" "$@"\n')
+    recorder.chmod(0o755)
+    return recorder
+
+
+def test_bootstrap_uses_locked_python_312_environment(tmp_path):
+    recorder = make_argv_recorder(tmp_path)
+    env = {**os.environ, "UV_BIN": str(recorder)}
+
+    completed = subprocess.run(
+        [ROOT / "scripts" / "bootstrap-local.sh"],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert completed.stdout.splitlines() == [
+        "ARG=sync",
+        "ARG=--locked",
+        "ARG=--python",
+        "ARG=3.12",
+        "ARG=run",
+        "ARG=python",
+        "ARG=-m",
+        "ARG=nltk.downloader",
+        "ARG=punkt_tab",
+        "ARG=averaged_perceptron_tagger_eng",
+    ]
+
+
+def test_launcher_runs_the_committed_profile(tmp_path):
+    recorder = make_argv_recorder(tmp_path)
+    env = {**os.environ, "HUGGINGVOICE_BIN": str(recorder)}
+
+    completed = subprocess.run(
+        [ROOT / "scripts" / "run-omniroute-ru-en.sh"],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert completed.stdout.splitlines() == [
+        "ARG=serve",
+        f"ARG={PROFILE}",
+    ]

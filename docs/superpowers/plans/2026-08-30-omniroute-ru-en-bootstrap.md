@@ -213,7 +213,7 @@ git commit -m "feat: add Russian-first OmniRoute profile"
 Extend `tests/test_local_bootstrap_config.py` with subprocess tests that:
 
 1. Set `UV_BIN` to a temporary executable which records each argv; run
-   `scripts/bootstrap-local.sh`; expect calls `sync --python 3.12` and
+   `scripts/bootstrap-local.sh`; expect calls `sync --locked --python 3.12` and
    `run python -m nltk.downloader punkt_tab averaged_perceptron_tagger_eng`.
 2. Set `HUGGINGVOICE_BIN` to a temporary executable which prints argv; run
    `scripts/run-omniroute-ru-en.sh`; expect exactly `serve` and the absolute
@@ -239,7 +239,7 @@ set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 uv_bin="${UV_BIN:-uv}"
 cd "$repo_root"
-"$uv_bin" sync --python 3.12
+"$uv_bin" sync --locked --python 3.12
 "$uv_bin" run python -m nltk.downloader punkt_tab averaged_perceptron_tagger_eng
 ```
 
