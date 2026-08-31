@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import stat
 
 import numpy as np
 import pytest
@@ -51,6 +52,20 @@ def test_voice_cluster_round_trips_normalized_float32_centroid(store: SpeakerMem
 def test_store_enables_wal_and_foreign_keys(store: SpeakerMemoryStore) -> None:
     assert store._connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     assert store._connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+
+def test_store_keeps_biometric_database_and_sidecars_private(tmp_path) -> None:
+    path = tmp_path / "private" / "speaker-memory.sqlite3"
+    memory = SpeakerMemoryStore(path)
+
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    for suffix in ("-wal", "-shm"):
+        sidecar = path.with_name(path.name + suffix)
+        if sidecar.exists():
+            assert stat.S_IMODE(sidecar.stat().st_mode) == 0o600
+
+    memory.close()
 
 
 def test_adaptive_centroid_weight_is_bounded(store: SpeakerMemoryStore) -> None:

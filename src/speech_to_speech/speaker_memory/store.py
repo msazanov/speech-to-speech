@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import secrets
 import sqlite3
@@ -56,7 +57,13 @@ class SpeakerMemoryStore:
         observation_retention_days: int = 30,
     ) -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        parent_existed = self.path.parent.exists()
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not parent_existed:
+            self.path.parent.chmod(0o700)
+        descriptor = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+        os.close(descriptor)
+        self.path.chmod(0o600)
         self.clock = clock
         if observation_retention_days < 1:
             raise ValueError("observation retention must be at least one day")
@@ -75,7 +82,14 @@ class SpeakerMemoryStore:
             self._connection.execute(f"PRAGMA busy_timeout={int(timeout_s * 1000)}")
             self._migrate()
             self._fts_enabled = self._initialize_fact_search()
+            self._restrict_sidecar_permissions()
         self.prune_expired()
+
+    def _restrict_sidecar_permissions(self) -> None:
+        for suffix in ("-wal", "-shm"):
+            sidecar = self.path.with_name(self.path.name + suffix)
+            if sidecar.exists():
+                sidecar.chmod(0o600)
 
     def _migrate(self) -> None:
         self._connection.executescript(
