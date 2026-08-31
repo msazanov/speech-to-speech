@@ -175,6 +175,46 @@ class SpeakerMemoryStore:
             rows = self._connection.execute("SELECT * FROM voice_clusters ORDER BY created_at, id").fetchall()
         return [self._cluster_from_row(row) for row in rows]
 
+    def update_voice_cluster(self, voice_id: str, embedding: np.ndarray, *, quality: float) -> VoiceCluster:
+        """Add one trusted sample to a centroid using a bounded quality-weighted mean."""
+
+        vector = normalize_embedding(embedding)
+        if not np.isfinite(quality) or quality <= 0:
+            raise ValueError("quality must be finite and positive")
+        with self._lock, self._connection:
+            row = self._connection.execute("SELECT * FROM voice_clusters WHERE id = ?", (voice_id,)).fetchone()
+            if row is None:
+                raise KeyError(voice_id)
+            current = self._cluster_from_row(row)
+            if current.centroid.size != vector.size:
+                raise InvalidEmbedding("speaker embedding dimension does not match the stored cluster")
+            bounded_weight = min(float(quality), 1.0)
+            total_weight = current.quality_weight + bounded_weight
+            centroid = normalize_embedding(
+                current.centroid * current.quality_weight + vector * bounded_weight
+            )
+            now = self.clock()
+            self._connection.execute(
+                """UPDATE voice_clusters
+                   SET centroid = ?, sample_count = ?, quality_weight = ?, last_seen = ?
+                   WHERE id = ?""",
+                (
+                    centroid.tobytes(),
+                    current.sample_count + 1,
+                    total_weight,
+                    now,
+                    voice_id,
+                ),
+            )
+        return VoiceCluster(
+            id=voice_id,
+            centroid=centroid,
+            sample_count=current.sample_count + 1,
+            quality_weight=total_weight,
+            created_at=current.created_at,
+            last_seen=now,
+        )
+
     def create_observation(
         self,
         voice_id: str,
