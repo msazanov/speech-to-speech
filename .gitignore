@@ -235,3 +235,4 @@ node_modules/
 
 # Isolated feature worktrees
 .worktrees/
+models/speaker-memory/

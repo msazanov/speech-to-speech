@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
+from time import perf_counter
 from uuid import uuid4
 
 import numpy as np
@@ -57,6 +58,7 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
             return
 
         try:
+            started = perf_counter()
             embedding = self.extractor.extract(audio, self.sample_rate)
             attribution = self.tracker.observe(
                 embedding,
@@ -65,6 +67,7 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
                 turn_revision=vad_audio.turn_revision or 0,
                 conversation_id=self.conversation_id,
             )
+            attribution = attribution.model_copy(update={"speaker_ms": (perf_counter() - started) * 1000})
         except Exception as exc:
             logger.warning("Speaker attribution skipped after %s", type(exc).__name__)
             yield vad_audio

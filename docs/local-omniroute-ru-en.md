@@ -5,6 +5,7 @@ OpenAI-compatible endpoint FreeToken:
 
 - VAD: Silero VAD + Smart Turn, CPU;
 - STT: GigaAM Multilingual CTC ONNX INT8, CPU, 6 потоков;
+- Speaker memory: CAM++/3D-Speaker ONNX, CPU, 1 поток, локальная SQLite;
 - LLM: FreeToken arbiter `http://127.0.0.1:1919/v1`, модель `gemma-4-e2b`;
 - TTS: Silero `v5_5_ru`, голос `xenia`, CPU; Supertonic загружается лениво только для английского;
 - Realtime API: `127.0.0.1:8765`.
@@ -21,7 +22,15 @@ cd /home/random/dev/huggingvoice
 ```
 
 Скрипт создаёт Python 3.12 окружение из `uv.lock` и устанавливает extras
-`gigaam`, `silero` и `supertonic`. Активный речевой тракт не использует Faster Whisper.
+`gigaam`, `silero`, `supertonic` и `speaker-memory`. Затем отдельно загрузите
+проверенную ONNX-модель:
+
+```bash
+./scripts/fetch-speaker-memory-model.sh
+```
+
+Скрипт проверяет SHA-256 до атомарной установки и не перезаписывает существующий
+файл с неверной контрольной суммой. Активный речевой тракт не использует Faster Whisper.
 
 ## Зависимость от FreeToken arbiter
 
@@ -100,6 +109,27 @@ PipeWire-устройств.
 - VAD: `min_silence_ms=500`, live transcription отключена.
 
 HuggingVoice держит STT/VAD/TTS на CPU и не управляет размещением LLM в RAM/VRAM.
+Speaker embedding также жёстко использует CPU и один поток. Сырые аудиозаписи не
+сохраняются; SQLite содержит биометрические центроиды, имена и личные факты и
+должна считаться приватной. Факты доступны только при состоянии `known`.
+
+## Проверка памяти голосов
+
+Подготовьте минимум по две отдельные русские записи каждого из двух людей и выполните:
+
+```bash
+uv run python scripts/speaker_memory_smoke.py \
+  --model models/speaker-memory/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx \
+  --sample 'Аркадий=/path/arkady-1.wav' \
+  --sample 'Аркадий=/path/arkady-2.wav' \
+  --sample 'Андрей=/path/andrey-1.wav' \
+  --sample 'Андрей=/path/andrey-2.wav' \
+  --json
+```
+
+Отчёт показывает стабильность `voice_id`, identity state и полную задержку
+embedding+clustering (`speaker_ms`). Порог профиля нужно считать предварительным,
+пока конкретные микрофоны и реальные голоса не дадут устойчивый результат.
 
 ## Проверка исходников
 

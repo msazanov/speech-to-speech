@@ -85,6 +85,8 @@ def test_bootstrap_uses_locked_python_312_environment(tmp_path):
         "ARG=silero",
         "ARG=--extra",
         "ARG=gigaam",
+        "ARG=--extra",
+        "ARG=speaker-memory",
         "ARG=--python",
         "ARG=3.12",
         "ARG=run",

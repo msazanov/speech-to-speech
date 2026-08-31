@@ -62,6 +62,7 @@ def test_final_audio_is_attributed_but_progressive_audio_is_not() -> None:
 
     assert getattr(progressive, "speaker", None) is None
     assert final.speaker.voice_id == "v_test"
+    assert final.speaker.speaker_ms > 0
     assert extractor.calls == 1
     assert tracker.calls[0][1]["conversation_id"] == "conv_test"
 
