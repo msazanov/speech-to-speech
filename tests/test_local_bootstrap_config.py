@@ -146,41 +146,18 @@ def test_wait_for_llm_defaults_to_arbiter_gemma_model(tmp_path):
     assert completed.returncode == 0, completed.stderr
 
 
-def test_voice_stack_switches_services_without_leaving_ornith_enabled(tmp_path):
+def test_voice_stack_activation_manages_only_huggingvoice(tmp_path):
     systemd_user_dir = tmp_path / "systemd-user"
     systemd_user_dir.mkdir()
-    ornith_unit_source = tmp_path / "freetoken-ornith.source.service"
-    ornith_unit_source.write_text("[Service]\nExecStart=/bin/true\n")
-    gemma_unit_source = tmp_path / "huggingvoice-gemma.source.service"
-    gemma_unit_source.write_text("[Service]\nExecStart=/bin/true\n")
     huggingvoice_unit_source = tmp_path / "huggingvoice.source.service"
     huggingvoice_unit_source.write_text("[Service]\nExecStart=/bin/true\n")
-    (systemd_user_dir / "freetoken-ornith.service").symlink_to(ornith_unit_source)
-    (systemd_user_dir / "huggingvoice-gemma.service").symlink_to(gemma_unit_source)
-    (systemd_user_dir / "huggingvoice.service").symlink_to(huggingvoice_unit_source)
     recorder = tmp_path / "record-systemctl"
-    recorder.write_text(
-        '#!/usr/bin/env bash\nprintf "ARG=%s\\n" "$@"\n'
-        'if [[ "$*" == *" stop "* && ! -e "$SYSTEMD_USER_DIR/${@: -1}" ]]; then\n'
-        '  printf "cannot stop missing unit\\n" >&2\n'
-        "  exit 1\n"
-        "fi\n"
-        'if [[ "$*" == *" disable --now "* ]]; then\n'
-        '  rm -f "$SYSTEMD_USER_DIR/${@: -1}"\n'
-        '  printf "disable --now removed linked unit before stop\\n" >&2\n'
-        "  exit 1\n"
-        "fi\n"
-        'if [[ "$*" == *" disable "* ]]; then\n'
-        '  rm -f "$SYSTEMD_USER_DIR/${@: -1}"\n'
-        "fi\n"
-    )
+    recorder.write_text('#!/usr/bin/env bash\nprintf "ARG=%s\\n" "$@"\n')
     recorder.chmod(0o755)
     env = {
         **os.environ,
         "SYSTEMCTL_BIN": str(recorder),
         "SYSTEMD_USER_DIR": str(systemd_user_dir),
-        "ORNITH_UNIT_SOURCE": str(ornith_unit_source),
-        "GEMMA_UNIT_SOURCE": str(gemma_unit_source),
         "HUGGINGVOICE_UNIT_SOURCE": str(huggingvoice_unit_source),
     }
 
@@ -191,57 +168,16 @@ def test_voice_stack_switches_services_without_leaving_ornith_enabled(tmp_path):
         env=env,
         text=True,
     )
-    restored = subprocess.run(
-        [ROOT / "scripts" / "restore-ornith.sh"],
-        check=True,
-        capture_output=True,
-        env=env,
-        text=True,
-    )
 
-    restored_link = systemd_user_dir / "freetoken-ornith.service"
-    assert restored_link.is_symlink()
-    assert restored_link.resolve() == ornith_unit_source
-    assert (systemd_user_dir / "huggingvoice-gemma.service").resolve() == gemma_unit_source
     assert (systemd_user_dir / "huggingvoice.service").resolve() == huggingvoice_unit_source
+    assert not (systemd_user_dir / "huggingvoice-gemma.service").exists()
+    assert not (systemd_user_dir / "freetoken-ornith.service").exists()
 
     assert activated.stdout.splitlines() == [
         "ARG=--user",
         "ARG=daemon-reload",
         "ARG=--user",
-        "ARG=stop",
-        "ARG=freetoken-ornith.service",
-        "ARG=--user",
-        "ARG=disable",
-        "ARG=freetoken-ornith.service",
-        "ARG=--user",
-        "ARG=daemon-reload",
-        "ARG=--user",
-        "ARG=enable",
-        "ARG=--now",
-        "ARG=huggingvoice-gemma.service",
-        "ARG=--user",
         "ARG=enable",
         "ARG=--now",
         "ARG=huggingvoice.service",
-    ]
-    assert restored.stdout.splitlines() == [
-        "ARG=--user",
-        "ARG=stop",
-        "ARG=huggingvoice.service",
-        "ARG=--user",
-        "ARG=stop",
-        "ARG=huggingvoice-gemma.service",
-        "ARG=--user",
-        "ARG=disable",
-        "ARG=huggingvoice.service",
-        "ARG=--user",
-        "ARG=disable",
-        "ARG=huggingvoice-gemma.service",
-        "ARG=--user",
-        "ARG=daemon-reload",
-        "ARG=--user",
-        "ARG=enable",
-        "ARG=--now",
-        "ARG=freetoken-ornith.service",
     ]

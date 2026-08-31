@@ -30,15 +30,12 @@ HuggingVoice не запускает, не останавливает и не п
 `model=gemma-4-e2b`, ждёт один запрос до 60 секунд и отключает SDK retries,
 чтобы timeout не создавал повторный элемент в FIFO.
 
-Source-controlled unit HuggingVoice находится в `deploy/systemd/` и после
-отдельного разрешения устанавливается symlink-ом в `~/.config/systemd/user/`:
+Source-controlled unit HuggingVoice находится в `deploy/systemd/`. После
+отдельного разрешения установите и запустите только речевой сервис:
 
 ```bash
-mkdir -p ~/.config/systemd/user
-ln -sfn /home/random/dev/huggingvoice/deploy/systemd/huggingvoice.service \
-  ~/.config/systemd/user/huggingvoice.service
-systemctl --user daemon-reload
-systemctl --user enable --now huggingvoice.service
+cd /home/random/dev/huggingvoice
+./scripts/activate-voice-stack.sh
 ```
 
 Не выполняйте эти команды, пока владелец FreeToken arbiter не подтвердит
