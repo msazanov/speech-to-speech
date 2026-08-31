@@ -2,7 +2,7 @@
 set -euo pipefail
 
 base_url="${1:-http://127.0.0.1:1919/v1}"
-model_id="${2:-gemma4-e2b-q4_0}"
+model_id="${2:-gemma-4-e2b}"
 attempts="${LLM_WAIT_ATTEMPTS:-120}"
 
 for ((attempt = 1; attempt <= attempts; attempt++)); do

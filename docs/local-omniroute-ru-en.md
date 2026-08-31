@@ -1,10 +1,11 @@
 # Локальный HuggingVoice: быстрый русский голосовой профиль
 
-Рабочий профиль держит речь на CPU и использует GPU только для компактной LLM:
+Рабочий профиль держит речевые модели на CPU, а LLM получает через стабильный
+OpenAI-compatible endpoint FreeToken:
 
 - VAD: Silero VAD + Smart Turn, CPU;
 - STT: GigaAM Multilingual CTC ONNX INT8, CPU, 6 потоков;
-- LLM: Gemma 4 E2B QAT Q4_0 через `llama.cpp`, контекст 4096, reasoning отключён;
+- LLM: FreeToken arbiter `http://127.0.0.1:1919/v1`, модель `gemma-4-e2b`;
 - TTS: Silero `v5_5_ru`, голос `xenia`, CPU; Supertonic загружается лениво только для английского;
 - Realtime API: `127.0.0.1:8765`.
 
@@ -22,48 +23,31 @@ cd /home/random/dev/huggingvoice
 Скрипт создаёт Python 3.12 окружение из `uv.lock` и устанавливает extras
 `gigaam`, `silero` и `supertonic`. Активный речевой тракт не использует Faster Whisper.
 
-Локальная LLM ожидается здесь:
+## Зависимость от FreeToken arbiter
 
-```text
-/home/random/dev/huggingvoice-llm-bench/models/gemma4-e2b/gemma-4-E2B_q4_0-it.gguf
-SHA256 fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634
-```
+HuggingVoice не запускает, не останавливает и не переключает LLM. FreeToken
+владеет портом `1919`, очередью и переключением моделей. Профиль отправляет
+`model=gemma-4-e2b`, ждёт один запрос до 60 секунд и отключает SDK retries,
+чтобы timeout не создавал повторный элемент в FIFO.
 
-## Сервисы и переключение с Ornith
-
-Units находятся в `deploy/systemd/` и устанавливаются symlink-ами в
-`~/.config/systemd/user/`:
+Source-controlled unit HuggingVoice находится в `deploy/systemd/` и после
+отдельного разрешения устанавливается symlink-ом в `~/.config/systemd/user/`:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-ln -sfn /home/random/dev/huggingvoice/deploy/systemd/huggingvoice-gemma.service \
-  ~/.config/systemd/user/huggingvoice-gemma.service
 ln -sfn /home/random/dev/huggingvoice/deploy/systemd/huggingvoice.service \
   ~/.config/systemd/user/huggingvoice.service
 systemctl --user daemon-reload
+systemctl --user enable --now huggingvoice.service
 ```
 
-Включить голосовой профиль:
-
-```bash
-cd /home/random/dev/huggingvoice
-./scripts/activate-voice-stack.sh
-```
-
-Команда останавливает и отключает автозапуск большого Ornith, затем запускает
-Gemma и HuggingVoice. Исходный unit Ornith сохраняется. Одновременно держать обе
-LLM нельзя: RTX 2070 имеет 8 ГБ VRAM.
-
-Вернуть Ornith:
-
-```bash
-./scripts/restore-ornith.sh
-```
+Не выполняйте эти команды, пока владелец FreeToken arbiter не подтвердит
+готовность endpoint и не будет дан отдельный сигнал на установку/перезапуск.
 
 Проверка состояния:
 
 ```bash
-systemctl --user status huggingvoice-gemma.service huggingvoice.service
+systemctl --user status huggingvoice.service
 curl -fsS http://127.0.0.1:1919/v1/models | jq
 curl -sS -o /dev/null -w 'HTTP %{http_code}\n' http://127.0.0.1:8765/docs
 ```
@@ -112,22 +96,21 @@ PipeWire-устройств.
 
 ## Ключевые параметры производительности
 
-- Gemma: `--ctx-size 4096`, `--gpu-layers all`, `--parallel 1`, Flash Attention,
-  `--reasoning off`, `--reasoning-budget 0`;
 - Chat Completions: `max_tokens=64`, `temperature=0.2`, thinking отключён через
-  `chat_template_kwargs`;
+  `chat_template_kwargs`, timeout 60 с, SDK retries 0;
 - GigaAM: `CPUExecutionProvider`, INT8, 6 потоков;
 - Silero: 24 кГц синтез с преобразованием в 16 кГц блоками по 512 samples;
 - VAD: `min_silence_ms=500`, live transcription отключена.
 
-На проверенном хосте Gemma использует около 1.6 ГБ VRAM; HuggingVoice держит
-STT/VAD/TTS на CPU и не резервирует VRAM.
+HuggingVoice держит STT/VAD/TTS на CPU и не управляет размещением LLM в RAM/VRAM.
 
 ## Проверка исходников
 
 ```bash
-uv run pytest -q
-uv run ruff check src tests
+uv run pytest -q tests/test_local_bootstrap_config.py tests/test_local_arbiter_integration.py
+uv run ruff check src/speech_to_speech/LLM \
+  src/speech_to_speech/arguments_classes/responses_api_language_model_arguments.py \
+  tests/test_local_bootstrap_config.py tests/test_local_arbiter_integration.py
 bash -n scripts/*.sh
 systemd-analyze --user verify deploy/systemd/*.service
 git diff --check

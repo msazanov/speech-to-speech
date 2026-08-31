@@ -28,6 +28,19 @@ class ResponsesApiLanguageModelHandlerArguments(LanguageModelBaseArguments):
             " than in a single, complete response, often used for handling large or real-time data.Default is True"
         },
     )
+    responses_api_request_timeout_s: float = field(
+        default=20.0,
+        metadata={
+            "help": "Per-request timeout in seconds for the OpenAI-compatible API. Default is 20 seconds."
+        },
+    )
+    responses_api_max_retries: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "Maximum SDK retries for each OpenAI-compatible request. Default uses the SDK policy; "
+            "set to 0 when an upstream arbiter already queues requests."
+        },
+    )
     responses_api_disable_thinking: bool = field(
         default=True,
         metadata={

@@ -170,6 +170,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         disable_thinking: bool = True,
         reasoning_effort: Optional[str] = None,
         request_timeout_s: float = 20.0,
+        max_retries: int | None = None,
         stream_batch_sentences: int = 3,
         enable_lang_prompt: bool = False,
         compact_history: bool = False,
@@ -194,6 +195,9 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         self.audio_history_turns = max(0, audio_history_turns)
         self.reasoning_effort = reasoning_effort
         self.request_timeout_s = float(request_timeout_s)
+        if max_retries is not None and max_retries < 0:
+            raise ValueError("max_retries must be non-negative")
+        self.max_retries = max_retries
         self.request_timeout = httpx.Timeout(
             self.request_timeout_s,
             connect=min(10.0, self.request_timeout_s),
@@ -207,7 +211,10 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             and self._is_local_base_url(base_url)
         ):
             api_key = "none"
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        client_kwargs: dict[str, Any] = {"api_key": api_key, "base_url": base_url}
+        if self.max_retries is not None:
+            client_kwargs["max_retries"] = self.max_retries
+        self.client = OpenAI(**client_kwargs)
         self._extra_body = self._build_extra_body(base_url, disable_thinking, reasoning_effort)
         self._prefetch_worker_slots = BoundedSemaphore(PREFETCH_PROVIDER_WORKER_LIMIT)
         self._prefetch_workers_lock = Lock()

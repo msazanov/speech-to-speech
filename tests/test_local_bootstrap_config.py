@@ -1,11 +1,13 @@
 import os
 import subprocess
+from configparser import ConfigParser
 from pathlib import Path
 
 from speech_to_speech.s2s_pipeline import parse_arguments
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = ROOT / "config" / "omniroute-ru-en.json"
+HUGGINGVOICE_UNIT = ROOT / "deploy" / "systemd" / "huggingvoice.service"
 
 
 def parsed_profile():
@@ -16,9 +18,11 @@ def test_profile_routes_chat_completions_to_local_gemma():
     parsed = parsed_profile()
 
     assert parsed.module_kwargs.llm_backend == "chat-completions"
-    assert parsed.llm_backend.config["model_name"] == "gemma4-e2b-q4_0"
+    assert parsed.llm_backend.config["model_name"] == "gemma-4-e2b"
     assert parsed.llm_backend.config["base_url"] == "http://127.0.0.1:1919/v1"
     assert parsed.llm_backend.config["api_key"] == "local"
+    assert parsed.llm_backend.config["request_timeout_s"] == 60.0
+    assert parsed.llm_backend.config["max_retries"] == 0
     assert parsed.llm_backend.config["disable_thinking"] is True
     assert parsed.llm_backend.config["reasoning_effort"] is None
     assert parsed.llm_backend.config["gen_kwargs"] == {"max_tokens": 64, "temperature": 0.2}
@@ -108,6 +112,38 @@ def test_launcher_runs_the_committed_profile(tmp_path):
         "ARG=serve",
         f"ARG={PROFILE}",
     ]
+
+
+def test_huggingvoice_unit_uses_arbiter_without_owning_an_llm_service():
+    unit = ConfigParser(interpolation=None, strict=False)
+    unit.read(HUGGINGVOICE_UNIT)
+
+    assert unit["Unit"].get("Requires") is None
+    assert "huggingvoice-gemma.service" not in unit["Unit"].get("After", "")
+    assert unit["Service"]["ExecStartPre"].split()[-2:] == [
+        "http://127.0.0.1:1919/v1",
+        "gemma-4-e2b",
+    ]
+
+
+def test_wait_for_llm_defaults_to_arbiter_gemma_model(tmp_path):
+    curl = tmp_path / "curl"
+    curl.write_text('#!/usr/bin/env bash\nprintf \'%s\' \'{"data":[{"id":"gemma-4-e2b"}]}\'\n')
+    curl.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "LLM_WAIT_ATTEMPTS": "1",
+    }
+
+    completed = subprocess.run(
+        [ROOT / "scripts" / "wait-for-llm.sh"],
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_voice_stack_switches_services_without_leaving_ornith_enabled(tmp_path):

@@ -65,7 +65,9 @@ class ResponsesApiModelHandler(BaseOpenAICompatibleHandler):
     def warmup(self) -> None:
         logger.info(f"Warming up {self.__class__.__name__}")
         start = time.time()
-        self.client.with_options(max_retries=WARMUP_MAX_RETRIES).responses.create(
+        configured_max_retries = getattr(self, "max_retries", None)
+        warmup_max_retries = configured_max_retries if configured_max_retries is not None else WARMUP_MAX_RETRIES
+        self.client.with_options(max_retries=warmup_max_retries).responses.create(
             model=self.model_name,
             input=[
                 {
