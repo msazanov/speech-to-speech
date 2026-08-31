@@ -26,7 +26,7 @@
   "responses_api_base_url": "http://127.0.0.1:1919/v1",
   "responses_api_api_key": "local",
   "responses_api_stream": true,
-  "responses_api_request_timeout_s": 60.0,
+  "responses_api_request_timeout_s": 120.0,
   "responses_api_max_retries": 0,
   "responses_api_disable_thinking": true,
   "responses_api_reasoning_effort": null,

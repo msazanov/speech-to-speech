@@ -29,7 +29,7 @@ def test_profile_routes_chat_completions_to_local_gemma():
     assert parsed.llm_backend.config["model_name"] == "gemma-4-e2b"
     assert parsed.llm_backend.config["base_url"] == "http://127.0.0.1:1919/v1"
     assert parsed.llm_backend.config["api_key"] == "local"
-    assert parsed.llm_backend.config["request_timeout_s"] == 60.0
+    assert parsed.llm_backend.config["request_timeout_s"] == 120.0
     assert parsed.llm_backend.config["max_retries"] == 0
     assert parsed.llm_backend.config["disable_thinking"] is True
     assert parsed.llm_backend.config["reasoning_effort"] is None
