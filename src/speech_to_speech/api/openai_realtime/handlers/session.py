@@ -39,6 +39,13 @@ class SessionHandler(RealtimeBaseHandler):
                 _type="invalid_session_type",
             )
 
+        required = self._service._required_instructions
+        if required and "instructions" in s.model_fields_set:
+            client_instructions = (s.instructions or "").strip()
+            if required not in client_instructions:
+                s = s.model_copy(deep=True)
+                s.instructions = "\n\n".join(part for part in (required, client_instructions) if part)
+
         model = getattr(s, "model", None)
         if model is not None:
             logger.info(f"Session model set to: {model}")

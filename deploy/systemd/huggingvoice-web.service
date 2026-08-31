@@ -1,0 +1,18 @@
+[Unit]
+Description=HuggingVoice local browser interface
+Wants=network-online.target
+Requires=huggingvoice.service
+After=network-online.target huggingvoice.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/random/dev/huggingvoice
+Environment=PYTHONUNBUFFERED=1 SPEECH_TO_SPEECH_URL=ws://127.0.0.1:8765/v1/realtime STARTUP_GREETING=
+EnvironmentFile=-%h/.config/huggingvoice/web.env
+ExecStart=/home/random/dev/huggingvoice/.venv/bin/uvicorn --app-dir demo server:app --host 127.0.0.1 --port 7860
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

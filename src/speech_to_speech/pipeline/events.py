@@ -18,6 +18,7 @@ from speech_to_speech.pipeline.messages import (
     AssistantToolCallPart,
     _normalize_assistant_output_fields,
 )
+from speech_to_speech.speaker_memory.models import SpeakerAttribution
 
 
 class PipelineEvent(BaseModel):
@@ -73,6 +74,7 @@ class TranscriptionCompletedEvent(PipelineEvent):
     turn_id: str | None = None
     turn_revision: int | None = None
     speech_stopped_at_s: float | None = Field(default=None, exclude=True)
+    speaker: SpeakerAttribution | None = Field(default=None, exclude=True, repr=False)
 
 
 class TranscriptionFailedEvent(PipelineEvent):

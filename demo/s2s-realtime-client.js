@@ -86,6 +86,7 @@ export class S2sRealtimeClient extends EventTarget {
     this._closing = false;
     this._muted = false;
     this._session = null;
+    this._sessionId = "";
     this._transport = null;
     this._agent = null;
     this._queueId = "";
@@ -123,6 +124,7 @@ export class S2sRealtimeClient extends EventTarget {
   }
 
   get status() { return this._status; }
+  get sessionId() { return this._sessionId; }
 
   /** @param {string} status */
   _setStatus(status) {
@@ -390,6 +392,14 @@ export class S2sRealtimeClient extends EventTarget {
     if (typeof type !== "string") return;
     if (this._debug) console.debug(`[${this.options.transport}]`, event);
     switch (type) {
+      case "session.created": {
+        const sessionId = typeof event.session?.id === "string" ? event.session.id : "";
+        if (sessionId) {
+          this._sessionId = sessionId;
+          this.dispatchEvent(new CustomEvent("session", { detail: { info: { sessionId } } }));
+        }
+        break;
+      }
       case "input_audio_buffer.speech_started": {
         this._clearPlayback();
         const itemId = typeof event.item_id === "string" ? event.item_id : "";

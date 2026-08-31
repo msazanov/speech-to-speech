@@ -18,7 +18,9 @@ session, not a retained log.
 
 from __future__ import annotations
 
+import json
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +64,28 @@ def transcript_for_log(text: object) -> str:
     if _log_transcripts:
         return value
     return f"chars={len(value)}"
+
+
+def structured_for_log(value: object) -> str:
+    """Render structured prompts while always removing embedded media payloads."""
+
+    if not _log_transcripts:
+        return "structured_content=redacted"
+
+    def scrub(item: Any) -> Any:
+        if isinstance(item, dict):
+            return {
+                str(key): "<media omitted>" if str(key) in {"audio", "data", "image_url"} else scrub(child)
+                for key, child in item.items()
+            }
+        if isinstance(item, (list, tuple)):
+            return [scrub(child) for child in item]
+        if hasattr(item, "model_dump"):
+            return scrub(item.model_dump(exclude_none=True))
+        return item
+
+    rendered = json.dumps(scrub(value), ensure_ascii=False, default=str, separators=(",", ":"))
+    return rendered
 
 
 def log_exception(

@@ -263,6 +263,40 @@ Arguments are validated against the declared `parameters` JSON Schema before the
 
 ---
 
+## Local acoustic echo cancellation
+
+The packaged `talk` and `local` clients can keep the microphone open during
+assistant playback and remove the local loudspeaker signal in-process:
+
+```bash
+uv run python -m speech_to_speech.cli local --echo-cancel
+uv run python -m speech_to_speech.cli talk \
+  --url ws://127.0.0.1:8765/v1/realtime \
+  --echo-cancel
+```
+
+This mode uses the system `libspeexdsp` library on CPU. A single full-duplex
+device callback captures the exact output and microphone blocks on the same
+clock, then a bounded worker queue processes them in 16 ms subframes outside
+PortAudio. The microphone remains active for barge-in. The input and output
+rates must match, and the callback block must be a multiple of the AEC frame
+size. The local JSON equivalents are:
+
+```json
+{
+  "local_audio_echo_cancel": true,
+  "local_audio_echo_cancel_frame_ms": 16,
+  "local_audio_echo_cancel_filter_ms": 300,
+  "local_audio_block_mic_during_playback": false
+}
+```
+
+`local_audio_echo_cancel` and `local_audio_block_mic_during_playback` are
+mutually exclusive. Startup logs show the selected AEC geometry; shutdown logs
+report only call count and processing latency, never audio or transcripts.
+
+---
+
 ## Interruption Handling
 
 Barge-in (user speaks while the assistant is playing audio) is handled cooperatively between the VAD, the `_send_loop`, and the LLM/TTS handlers via a shared `CancelScope` object (`cancel_scope.py`).

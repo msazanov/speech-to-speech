@@ -118,6 +118,31 @@ class TestConnectionLifecycle:
         assert service._state(sid).runtime_config.session.instructions == "Use the configured persona."
         service.unregister(sid)
 
+    def test_server_required_instructions_survive_browser_persona_update(
+        self, text_prompt_queue, should_listen
+    ):
+        service = RealtimeService(
+            text_prompt_queue=text_prompt_queue,
+            should_listen=should_listen,
+            default_instructions="Speak Russian and obey speaker-memory privacy.",
+            required_instructions="Speak Russian and obey speaker-memory privacy.",
+        )
+        sid = service.register()
+
+        service.handle_session_update(
+            sid,
+            SessionUpdateEvent(
+                type="session.update",
+                session={"type": "realtime", "instructions": "You are a friendly voice assistant."},
+            ),
+        )
+
+        assert service._state(sid).runtime_config.session.instructions == (
+            "Speak Russian and obey speaker-memory privacy.\n\n"
+            "You are a friendly voice assistant."
+        )
+        service.unregister(sid)
+
     def test_unregister_removes_state(self, service):
         sid = service.register()
         service.unregister(sid)

@@ -11,6 +11,7 @@ from collections.abc import Callable, Generator, Iterator
 from queue import Empty, Full, Queue
 from threading import BoundedSemaphore, Lock, Thread, current_thread
 from threading import Event as ThreadingEvent
+from time import perf_counter
 from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 
@@ -56,7 +57,7 @@ from speech_to_speech.pipeline.messages import (
     TokenUsage,
 )
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
-from speech_to_speech.pipeline.transcript_logging import log_exception, transcript_for_log
+from speech_to_speech.pipeline.transcript_logging import log_exception, structured_for_log, transcript_for_log
 from speech_to_speech.utils.utils import is_out_of_band, response_wants_audio
 
 logger = logging.getLogger(__name__)
@@ -765,6 +766,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         history_committed = False
         transaction_rolled_back = False
         provider_request_started = False
+        provider_started_at_s: float | None = None
+        first_event_ms: float | None = None
         consumed_image_ids: set[str] = set()
 
         def rollback_transaction() -> None:
@@ -794,9 +797,19 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     # would reject this; fail with a clear message instead of an opaque error.
                     error_message = "Cannot generate a response: no instructions and no input were provided."
                 else:
-                    provider_request_started = True
+                    logger.info(
+                        "LLM request model=%s turn=%s rev=%s stream=%s prompt=%s",
+                        self.model_name,
+                        turn.turn_id,
+                        turn.turn_revision,
+                        self.stream,
+                        structured_for_log(api_input),
+                    )
 
                     def make_request() -> Any:
+                        nonlocal provider_request_started, provider_started_at_s
+                        provider_request_started = True
+                        provider_started_at_s = perf_counter()
                         return (request_fn or self._request)(api_input, optional_kwargs)
 
                     if turn.prefetch_transaction is not None:
@@ -809,6 +822,23 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                         api_response = make_request()
                         events = (event_iterator_fn or self._iter_events)(api_response)
                 if events is not None:
+                    raw_events = events
+
+                    def observed_events() -> Iterator[ProviderEvent]:
+                        nonlocal first_event_ms
+                        for event in raw_events:
+                            if first_event_ms is None and isinstance(event, (TextDelta, AssistantMessage, ToolCall)):
+                                assert provider_started_at_s is not None
+                                first_event_ms = (perf_counter() - provider_started_at_s) * 1000
+                                logger.info(
+                                    "LLM first event model=%s turn=%s ttft_ms=%.1f",
+                                    self.model_name,
+                                    turn.turn_id,
+                                    first_event_ms,
+                                )
+                            yield event
+
+                    events = observed_events()
                     if self.stream:
                         generation_completed = yield from self._consume_streaming(events, state, turn)
                     else:
@@ -827,6 +857,26 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 log_exception(logger, "LLM generation failed; ending the current response", exc)
                 if error_message is None:
                     error_message = f"Language model generation failed: {exc}"
+
+            if provider_started_at_s is not None:
+                if error_message is not None:
+                    status = "error"
+                elif generation_completed:
+                    status = "completed"
+                else:
+                    status = "cancelled"
+                logger.info(
+                    "LLM response model=%s turn=%s status=%s total_ms=%.1f ttft_ms=%s "
+                    "input_tokens=%d output_tokens=%d answer=%s",
+                    self.model_name,
+                    turn.turn_id,
+                    status,
+                    (perf_counter() - provider_started_at_s) * 1000,
+                    f"{first_event_ms:.1f}" if first_event_ms is not None else "n/a",
+                    state.input_tokens,
+                    state.output_tokens,
+                    transcript_for_log(state.clean_text),
+                )
 
             if (
                 provider_request_started

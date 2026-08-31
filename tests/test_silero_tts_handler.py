@@ -10,7 +10,12 @@ from speech_to_speech.pipeline.cancel_scope import CancelScope
 from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, AudioOutput, EndOfResponse, TTSInput
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 from speech_to_speech.TTS import silero_tts_handler as silero_module
-from speech_to_speech.TTS.silero_tts_handler import SILERO_REPOSITORY, SileroTTSHandler, _resolve_silero_repository
+from speech_to_speech.TTS.silero_tts_handler import (
+    SILERO_REPOSITORY,
+    SileroTTSHandler,
+    _detect_tts_language,
+    _resolve_silero_repository,
+)
 
 
 class FakeSileroModel:
@@ -165,6 +170,38 @@ def test_english_input_uses_prepared_fallback_without_calling_russian_model() ->
     chunks = list(handler.process(TTSInput(text="Hello.", language_code="en-US")))
 
     assert model.calls == []
+    np.testing.assert_array_equal(chunks[0], np.array([1, 2, 3, 4], dtype=np.int16))
+
+
+@pytest.mark.parametrize(
+    ("text", "inherited", "expected"),
+    [
+        ("Sure, I can help you with that.", "ru", "en"),
+        ("Конечно, я помогу вам с этим.", "en", "ru"),
+        ("Запусти OpenAI API и проверь HTTP status.", "ru", "ru"),
+        ("123...", "en-US", "en"),
+    ],
+)
+def test_tts_language_follows_generated_script(text, inherited, expected):
+    assert _detect_tts_language(text, inherited) == expected
+
+
+def test_english_generated_text_overrides_russian_input_language() -> None:
+    model = FakeSileroModel(np.zeros(4, dtype=np.float32))
+    handler = make_handler(model)
+    handler.english_fallback = True
+    seen = []
+
+    class FakeEnglishHandler:
+        def process(self, tts_input: TTSInput):
+            seen.append(tts_input)
+            yield np.array([1, 2, 3, 4], dtype=np.int16)
+
+    handler._english_handler = FakeEnglishHandler()
+    chunks = list(handler.process(TTSInput(text="Sure, I can help.", language_code="ru")))
+
+    assert model.calls == []
+    assert seen[0].language_code == "en"
     np.testing.assert_array_equal(chunks[0], np.array([1, 2, 3, 4], dtype=np.int16))
 
 

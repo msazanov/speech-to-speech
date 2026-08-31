@@ -8,7 +8,7 @@ from threading import Event as ThreadingEvent
 from typing import Any, Callable, TypeVar
 
 import numpy as np
-from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from openai.types.realtime import (
     ConversationItemCreateEvent,
     ConversationItemTruncateEvent,
@@ -19,6 +19,7 @@ from openai.types.realtime import (
     ResponseCreateEvent,
     SessionUpdateEvent,
 )
+from pydantic import BaseModel, Field
 
 from speech_to_speech.api.openai_realtime.llm_proxy import LLMProxyConfig, mount_llm_proxy
 from speech_to_speech.api.openai_realtime.pipeline_unit import PipelineUnit, SessionState
@@ -84,6 +85,14 @@ SESSION_END_DRAIN_TIMEOUT_S = 10.0
 # as "stuck".
 SESSION_END_QUARANTINE_TIMEOUT_S = 180.0
 QItem = TypeVar("QItem")
+
+
+class SpeakerMemoryToolRequest(BaseModel):
+    """One browser tool call, authorized by an active realtime session."""
+
+    session_id: str = Field(min_length=4, max_length=160)
+    name: str = Field(min_length=4, max_length=100)
+    arguments: dict[str, Any]
 
 
 def _keep_cancel_bookkeeping(item: Any) -> bool:
@@ -522,8 +531,55 @@ def create_app(
                     pass
 
     app = FastAPI(lifespan=lifespan)
+    app.state.pipeline_pool = pool
 
     llm_proxy_usage = mount_llm_proxy(app, llm_proxy_config)
+
+    @app.post("/v1/speaker-memory/tool")
+    async def speaker_memory_tool(request: SpeakerMemoryToolRequest) -> dict[str, Any]:
+        """Execute a packaged memory tool only for its live pipeline session."""
+
+        from speech_to_speech.speaker_memory.tools import TOOLS, create_tool_executor
+
+        supported_names = {tool["name"] for tool in TOOLS}
+        if request.name not in supported_names:
+            raise HTTPException(status_code=400, detail="Unknown speaker-memory tool.")
+
+        unit = next(
+            (
+                candidate
+                for candidate in pool
+                if candidate.session is not None
+                and candidate.session.released_at is None
+                and candidate.session.session_id == request.session_id
+            ),
+            None,
+        )
+        if unit is None:
+            raise HTTPException(status_code=404, detail="Active realtime session not found.")
+        handler = next(
+            (
+                candidate
+                for candidate in unit.handlers
+                if hasattr(candidate, "service") and hasattr(candidate, "conversation_id")
+            ),
+            None,
+        )
+        if handler is None:
+            raise HTTPException(status_code=503, detail="Speaker memory is disabled.")
+
+        executor = create_tool_executor(
+            handler.service,
+            conversation_id_provider=lambda: handler.conversation_id,
+        )
+        try:
+            result = await executor(request.name, request.arguments)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "output": result.output,
+            "create_response": result.create_response,
+        }
 
     def _claim_unit(transport: SessionTransport | None) -> PipelineUnit | None:
         """Atomically (between asyncio yield points) reserve the first idle unit.

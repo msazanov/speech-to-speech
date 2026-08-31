@@ -146,6 +146,31 @@ if (images.length !== 1 || images[0][1].triggerResponse !== false) {
     )
 
 
+def test_direct_session_created_exposes_backend_session_id():
+    _run_node(
+        """
+globalThis.localStorage = { getItem() { return null; } };
+globalThis.CustomEvent = class CustomEvent extends Event {
+  constructor(type, init = {}) { super(type); this.detail = init.detail; }
+};
+const { S2sRealtimeClient } = await import("./demo/s2s-realtime-client.js");
+const client = new S2sRealtimeClient({
+  transport: "websocket",
+  directUrl: "ws://unused",
+  voice: "coral",
+  instructions: "Be concise.",
+});
+const sessions = [];
+client.addEventListener("session", (event) => sessions.push(event.detail.info));
+client._onTransportEvent({ type: "session.created", session: { id: "session_direct_1" } });
+if (client.sessionId !== "session_direct_1") throw new Error(`missing session id: ${client.sessionId}`);
+if (sessions.length !== 1 || sessions[0].sessionId !== "session_direct_1") {
+  throw new Error(`unexpected session event: ${JSON.stringify(sessions)}`);
+}
+"""
+    )
+
+
 def test_webrtc_mic_opens_only_after_startup_greeting():
     _run_node(
         """

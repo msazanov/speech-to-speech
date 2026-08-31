@@ -39,6 +39,21 @@ class LocalAudioArguments:
             "help": "Pause local microphone capture while audio is playing. Disabled by default so barge-in works."
         },
     )
+    local_audio_echo_cancel: bool = field(
+        default=False,
+        metadata={
+            "help": "Remove local speaker playback from microphone audio with CPU-only SpeexDSP AEC.",
+            "aliases": ["--echo-cancel"],
+        },
+    )
+    local_audio_echo_cancel_frame_ms: int = field(
+        default=16,
+        metadata={"help": "SpeexDSP AEC frame duration in milliseconds (10-20)."},
+    )
+    local_audio_echo_cancel_filter_ms: int = field(
+        default=300,
+        metadata={"help": "SpeexDSP acoustic echo tail in milliseconds (100-500)."},
+    )
     local_audio_print_json: bool = field(
         default=False,
         metadata={"help": "Print raw Realtime events received by the packaged local audio client."},

@@ -330,6 +330,8 @@ let activeTransport = "ws";
 let toolsEnabled = loadTools();
 // Whether the server holds a Serper key (learned from /api/config on load).
 let serverSearchKey = false;
+/** Native server-side identity tools exposed by the pinned HuggingVoice service. */
+let speakerMemoryTools = [];
 // A user-supplied key (fallback when the deploy has none). localStorage only.
 let userSearchKey = localStorage.getItem(STORAGE_KEYS.searchKey) || "";
 /** @type {MediaStream | null} */
@@ -345,6 +347,7 @@ function activeToolDefs() {
   const defs = [];
   if (toolsEnabled.web_search && searchAvailable()) defs.push(TOOL_DEFS.web_search);
   if (toolsEnabled.camera_snapshot) defs.push(TOOL_DEFS.camera_snapshot);
+  defs.push(...speakerMemoryTools);
   return defs;
 }
 
@@ -843,6 +846,17 @@ async function runTool(name, argsJson, callId) {
         console.warn("[tool] camera_snapshot: no frame — camera off or not ready");
         result.output = "The camera is not available right now.";
       }
+    } else if (name.startsWith("speaker_memory_")) {
+      if (!client.sessionId) throw new Error("realtime session id is not available");
+      const response = await fetch("api/speaker-memory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: client.sessionId, name, arguments: args }),
+      });
+      let payload = {};
+      try { payload = await response.json(); } catch { /* handled below */ }
+      if (!response.ok) throw new Error(payload.detail || `speaker memory error (${response.status})`);
+      result.output = JSON.stringify(payload.output ?? payload);
     } else {
       result.output = `Unknown tool: ${name}`;
     }
@@ -891,6 +905,9 @@ async function fetchConfig() {
     if (res.ok) {
       const json = await res.json();
       serverSearchKey = !!json.search;
+      speakerMemoryTools = Array.isArray(json.speakerMemoryTools)
+        ? json.speakerMemoryTools.filter((tool) => tool?.name?.startsWith("speaker_memory_"))
+        : [];
       lbMode = !!json.lb;
       // Lock to LB mode only when the deploy reports a load balancer.
       allowDirect = json.allowDirect ?? !lbMode;

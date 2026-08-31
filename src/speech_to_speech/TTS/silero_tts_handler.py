@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import re
 from math import gcd
 from pathlib import Path
 from threading import Event
+from time import perf_counter
 from typing import Iterator
 
 import numpy as np
@@ -16,6 +18,7 @@ from speech_to_speech.pipeline.cancel_scope import CancelScope
 from speech_to_speech.pipeline.handler_types import TTSIn, TTSOut
 from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, EndOfResponse
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+from speech_to_speech.pipeline.transcript_logging import transcript_for_log
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -24,6 +27,8 @@ PIPELINE_SAMPLE_RATE = 16000
 SILERO_REPOSITORY = "snakers4/silero-models:d9355348e2781dc8fa25a135d1602c530afae24c"
 SILERO_RUSSIAN_SPEAKERS = frozenset({"aidar", "baya", "kseniya", "xenia", "eugene"})
 SILERO_SAMPLE_RATES = frozenset({8000, 24000, 48000})
+_CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
+_LATIN_RE = re.compile(r"[A-Za-z]")
 
 
 def _resolve_silero_repository(torch_hub_dir: str | Path) -> str:
@@ -31,6 +36,24 @@ def _resolve_silero_repository(torch_hub_dir: str | Path) -> str:
     if cached_repository.is_dir():
         return str(cached_repository)
     return SILERO_REPOSITORY
+
+
+def _detect_tts_language(text: str, inherited: str | None) -> str:
+    """Prefer the generated script while keeping mixed technical RU text stable."""
+
+    inherited_code = (inherited or "").strip().lower().split("-", 1)[0]
+    cyrillic = len(_CYRILLIC_RE.findall(text))
+    latin = len(_LATIN_RE.findall(text))
+    if latin and not cyrillic:
+        return "en"
+    if cyrillic and not latin:
+        return "ru"
+    if cyrillic and latin:
+        if latin >= cyrillic * 4:
+            return "en"
+        if cyrillic >= latin * 2:
+            return "ru"
+    return inherited_code or "ru"
 
 
 class SileroTTSHandler(BaseHandler[TTSIn, TTSOut]):
@@ -116,13 +139,19 @@ class SileroTTSHandler(BaseHandler[TTSIn, TTSOut]):
         if speculative_turns:
             speculative_turns.commit(tts_input.turn_id, tts_input.turn_revision)
 
-        language_code = (tts_input.language_code or "").strip().lower().split("-", 1)[0]
+        language_code = _detect_tts_language(tts_input.text, tts_input.language_code)
         if language_code == "en" and getattr(self, "english_fallback", False):
             english_handler = getattr(self, "_english_handler", None)
             if english_handler is None:
                 english_handler = self._load_english_handler()
                 self._english_handler = english_handler
-            yield from english_handler.process(tts_input)
+            inherited_code = (tts_input.language_code or "").strip().lower().split("-", 1)[0]
+            english_input = (
+                tts_input
+                if inherited_code == "en"
+                else tts_input.model_copy(update={"language_code": "en"})
+            )
+            yield from english_handler.process(english_input)
             return
 
         cancel_scope = getattr(self, "cancel_scope", None)
@@ -132,6 +161,7 @@ class SileroTTSHandler(BaseHandler[TTSIn, TTSOut]):
             return
 
         console.print(f"[green]ASSISTANT: {text}")
+        started = perf_counter()
         wav = self.model.apply_tts(
             text=text,
             speaker=self.speaker,
@@ -150,6 +180,16 @@ class SileroTTSHandler(BaseHandler[TTSIn, TTSOut]):
             self.sample_rate // divisor,
         )
         audio_int16 = np.clip(audio_16k * 32768, -32768, 32767).astype(np.int16)
+        synth_ms = (perf_counter() - started) * 1000
+        audio_ms = len(audio_int16) * 1000 / PIPELINE_SAMPLE_RATE
+        logger.info(
+            "TTS completed backend=silero voice=%s synth_ms=%.1f audio_ms=%.1f rtf=%.3f text=%s",
+            self.speaker,
+            synth_ms,
+            audio_ms,
+            synth_ms / audio_ms if audio_ms else 0.0,
+            transcript_for_log(text),
+        )
 
         full_samples = (len(audio_int16) // self.blocksize) * self.blocksize
         for offset in range(0, full_samples, self.blocksize):

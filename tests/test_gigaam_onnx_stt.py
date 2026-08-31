@@ -75,8 +75,9 @@ def make_handler(text: str, *, language: str = "auto"):
     return handler
 
 
-def test_final_transcription_preserves_turn_and_infers_russian():
+def test_final_transcription_preserves_turn_and_infers_russian(caplog):
     handler = make_handler("проверяем OpenAI speech")
+    caplog.set_level("INFO")
 
     outputs = list(
         handler.process(
@@ -99,6 +100,8 @@ def test_final_transcription_preserves_turn_and_infers_russian():
             speech_stopped_at_s=42.0,
         )
     ]
+    assert "STT completed backend=gigaam" in caplog.text
+    assert "language=ru-auto" in caplog.text
 
 
 def test_progressive_transcription_has_no_language_field():

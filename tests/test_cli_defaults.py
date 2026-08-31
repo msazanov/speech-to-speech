@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from speech_to_speech.api.openai_realtime.audio_client import RealtimeAudioClientConfig
 from speech_to_speech.arguments_classes.chat_completions_language_model_arguments import (
     ChatCompletionsLanguageModelHandlerArguments,
 )
@@ -15,6 +16,7 @@ from speech_to_speech.arguments_classes.realtime_server_arguments import Realtim
 from speech_to_speech.arguments_classes.responses_api_language_model_arguments import (
     ResponsesApiLanguageModelHandlerArguments,
 )
+from speech_to_speech.arguments_classes.speaker_memory_arguments import SpeakerMemoryArguments
 from speech_to_speech.arguments_classes.vad_arguments import VADHandlerArguments
 from speech_to_speech.backend_registry import BackendSelection
 from speech_to_speech.cli import main, parse_command, parse_talk_arguments
@@ -136,6 +138,7 @@ EXPECTED_FIELD_TYPES = {
     "module_kwargs": ModuleArguments,
     "realtime_server_kwargs": RealtimeServerArguments,
     "local_audio_kwargs": LocalAudioArguments,
+    "speaker_memory_kwargs": SpeakerMemoryArguments,
     "vad_handler_kwargs": VADHandlerArguments,
     "stt_backend": BackendSelection,
     "llm_backend": BackendSelection,
@@ -386,6 +389,37 @@ def test_talk_accepts_custom_playback_buffer():
     assert config.playback_buffer_ms == 240
 
 
+def test_talk_accepts_cpu_echo_cancellation_options():
+    config = parse_talk_arguments(
+        ["--echo-cancel", "--echo-cancel-frame-ms", "16", "--echo-cancel-filter-ms", "320"]
+    )
+
+    assert config.echo_cancel is True
+    assert config.echo_cancel_frame_ms == 16
+    assert config.echo_cancel_filter_ms == 320
+
+
+def test_audio_config_rejects_echo_cancellation_and_microphone_muting_together():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        RealtimeAudioClientConfig(echo_cancel=True, block_mic_during_playback=True)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"send_rate": 0, "recv_rate": 0}, "sample rates"),
+        ({"echo_cancel_frame_ms": 0}, "10 and 20"),
+        ({"echo_cancel_frame_ms": 21}, "10 and 20"),
+        ({"echo_cancel_filter_ms": 99}, "100 and 500"),
+        ({"echo_cancel_filter_ms": 501}, "100 and 500"),
+        ({"chunk_size": 0}, "chunk_size"),
+    ],
+)
+def test_audio_config_rejects_invalid_echo_cancellation_geometry(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        RealtimeAudioClientConfig(echo_cancel=True, **kwargs)
+
+
 def test_packaged_audio_clients_have_no_general_playback_buffer_default():
     assert parse_talk_arguments([]).playback_buffer_ms == 0
     assert LocalAudioArguments().local_audio_playback_buffer_ms is None
@@ -468,6 +502,16 @@ def test_local_accepts_audio_flags_but_rejects_host():
     assert args.local_audio_kwargs.local_audio_playback_buffer_ms == 240
     with pytest.raises(ValueError, match="--host"):
         parse_arguments(["--host", "0.0.0.0"], command="local")
+
+
+def test_local_accepts_cpu_echo_cancellation_flags():
+    args = parse_arguments(
+        ["--local-audio-echo-cancel", "--local-audio-echo-cancel-filter-ms", "320"],
+        command="local",
+    )
+
+    assert args.local_audio_kwargs.local_audio_echo_cancel is True
+    assert args.local_audio_kwargs.local_audio_echo_cancel_filter_ms == 320
 
 
 @pytest.mark.parametrize(
