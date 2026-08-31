@@ -52,10 +52,11 @@ def audio(*, samples: int = 16000, mode: str = "final") -> VADAudio:
     )
 
 
-def test_final_audio_is_attributed_but_progressive_audio_is_not() -> None:
+def test_final_audio_is_attributed_but_progressive_audio_is_not(caplog) -> None:
     extractor = FakeExtractor()
     tracker = FakeTracker()
     handler = bare_handler(extractor, tracker)
+    caplog.set_level(logging.INFO)
 
     progressive = list(handler.process(audio(mode="progressive")))[0]
     final = list(handler.process(audio(mode="final")))[0]
@@ -65,6 +66,8 @@ def test_final_audio_is_attributed_but_progressive_audio_is_not() -> None:
     assert final.speaker.speaker_ms > 0
     assert extractor.calls == 1
     assert tracker.calls[0][1]["conversation_id"] == "conv_test"
+    assert "Speaker attributed voice=v_test state=unknown" in caplog.text
+    assert "sr_test" not in caplog.text
 
 
 def test_short_final_audio_passes_through_without_inference() -> None:

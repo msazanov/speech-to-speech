@@ -73,6 +73,13 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
                 conversation_id=self.conversation_id,
             )
             attribution = attribution.model_copy(update={"speaker_ms": (perf_counter() - started) * 1000})
+            logger.info(
+                "Speaker attributed voice=%s state=%s margin=%s speaker_ms=%.1f",
+                attribution.voice_id,
+                attribution.state.value,
+                f"{attribution.margin:.3f}" if attribution.margin is not None else "n/a",
+                attribution.speaker_ms,
+            )
         except Exception as exc:
             logger.warning("Speaker attribution skipped after %s", type(exc).__name__)
             yield vad_audio
