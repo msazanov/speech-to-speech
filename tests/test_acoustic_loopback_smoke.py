@@ -1,10 +1,17 @@
 import pytest
 from scripts.acoustic_loopback_smoke import (
+    build_parser,
     character_similarity,
     normalize_text,
     validate_reference,
     word_error_rate,
 )
+
+
+def test_acoustic_loopback_defaults_to_normal_playback_volume() -> None:
+    args = build_parser().parse_args([])
+
+    assert args.volume == pytest.approx(0.85)
 
 
 def test_normalize_text_is_russian_friendly():

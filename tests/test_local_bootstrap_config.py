@@ -125,7 +125,16 @@ def test_voice_stack_switches_services_without_leaving_ornith_enabled(tmp_path):
     recorder = tmp_path / "record-systemctl"
     recorder.write_text(
         '#!/usr/bin/env bash\nprintf "ARG=%s\\n" "$@"\n'
-        'if [[ "$*" == *"disable --now"* ]]; then\n'
+        'if [[ "$*" == *" stop "* && ! -e "$SYSTEMD_USER_DIR/${@: -1}" ]]; then\n'
+        '  printf "cannot stop missing unit\\n" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        'if [[ "$*" == *" disable --now "* ]]; then\n'
+        '  rm -f "$SYSTEMD_USER_DIR/${@: -1}"\n'
+        '  printf "disable --now removed linked unit before stop\\n" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        'if [[ "$*" == *" disable "* ]]; then\n'
         '  rm -f "$SYSTEMD_USER_DIR/${@: -1}"\n'
         "fi\n"
     )
@@ -164,9 +173,13 @@ def test_voice_stack_switches_services_without_leaving_ornith_enabled(tmp_path):
         "ARG=--user",
         "ARG=daemon-reload",
         "ARG=--user",
-        "ARG=disable",
-        "ARG=--now",
+        "ARG=stop",
         "ARG=freetoken-ornith.service",
+        "ARG=--user",
+        "ARG=disable",
+        "ARG=freetoken-ornith.service",
+        "ARG=--user",
+        "ARG=daemon-reload",
         "ARG=--user",
         "ARG=enable",
         "ARG=--now",
@@ -178,13 +191,19 @@ def test_voice_stack_switches_services_without_leaving_ornith_enabled(tmp_path):
     ]
     assert restored.stdout.splitlines() == [
         "ARG=--user",
+        "ARG=stop",
+        "ARG=huggingvoice.service",
+        "ARG=--user",
+        "ARG=stop",
+        "ARG=huggingvoice-gemma.service",
+        "ARG=--user",
         "ARG=disable",
-        "ARG=--now",
         "ARG=huggingvoice.service",
         "ARG=--user",
         "ARG=disable",
-        "ARG=--now",
         "ARG=huggingvoice-gemma.service",
+        "ARG=--user",
+        "ARG=daemon-reload",
         "ARG=--user",
         "ARG=enable",
         "ARG=--now",

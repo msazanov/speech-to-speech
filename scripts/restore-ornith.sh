@@ -7,9 +7,12 @@ ornith_unit_source="${ORNITH_UNIT_SOURCE:-/home/random/dev/qwen/freetoken/deploy
 gemma_unit_source="${GEMMA_UNIT_SOURCE:-/home/random/dev/huggingvoice/deploy/systemd/huggingvoice-gemma.service}"
 huggingvoice_unit_source="${HUGGINGVOICE_UNIT_SOURCE:-/home/random/dev/huggingvoice/deploy/systemd/huggingvoice.service}"
 
-"$systemctl_bin" --user disable --now huggingvoice.service
-"$systemctl_bin" --user disable --now huggingvoice-gemma.service
+"$systemctl_bin" --user stop huggingvoice.service
+"$systemctl_bin" --user stop huggingvoice-gemma.service
+"$systemctl_bin" --user disable huggingvoice.service
+"$systemctl_bin" --user disable huggingvoice-gemma.service
 ln -sfn "$huggingvoice_unit_source" "${systemd_user_dir}/huggingvoice.service"
 ln -sfn "$gemma_unit_source" "${systemd_user_dir}/huggingvoice-gemma.service"
 ln -sfn "$ornith_unit_source" "${systemd_user_dir}/freetoken-ornith.service"
+"$systemctl_bin" --user daemon-reload
 "$systemctl_bin" --user enable --now freetoken-ornith.service

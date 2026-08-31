@@ -295,7 +295,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=45.0)
     parser.add_argument("--settle-ms", type=int, default=750)
     parser.add_argument("--voice", default="M1")
-    parser.add_argument("--volume", type=float, default=0.85)
+    parser.add_argument(
+        "--volume",
+        type=float,
+        default=0.85,
+        help="Громкость воспроизведения от 0 до 1. По умолчанию 0.85.",
+    )
     parser.add_argument("--json", action="store_true", help="Вывести только JSON.")
     return parser
 
