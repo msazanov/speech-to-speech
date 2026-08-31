@@ -41,7 +41,7 @@
  * @property {ToolDef[]} [tools]
  * @property {NoiseGate} [noiseGate]
  * @property {string} [audioOutputId]
- * @property {(call: {name: string, arguments: string, callId: string}) => Promise<{output: string, image?: string}>} [executeTool]
+ * @property {(call: {name: string, arguments: string, callId: string}) => Promise<{output: string, image?: string, createResponse?: boolean}>} [executeTool]
  */
 
 import { extractResponseTranscript, trimTrailingSlash } from "./ws/codec.js";
@@ -246,7 +246,7 @@ export class S2sRealtimeClient extends EventTarget {
   }
 
   _buildAgent() {
-    const { RealtimeAgent, tool } = sdk();
+    const { RealtimeAgent, tool, backgroundResult } = sdk();
     const tools = this._tools.map((definition) => tool({
       name: definition.name,
       description: definition.description,
@@ -262,7 +262,13 @@ export class S2sRealtimeClient extends EventTarget {
           callId,
         });
         if (result.image) this._session?.addImage(result.image, { triggerResponse: false });
-        return result.output;
+        // Memory mutations acknowledge the write through the tool output but
+        // deliberately do not trigger a second model turn. Returning the SDK
+        // background marker preserves that contract in the browser just as the
+        // native Python client does.
+        return result.createResponse === false && typeof backgroundResult === "function"
+          ? backgroundResult(result.output)
+          : result.output;
       },
     }));
     return new RealtimeAgent({

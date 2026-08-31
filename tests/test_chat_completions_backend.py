@@ -173,12 +173,12 @@ def test_forced_tool_call_is_emitted_without_an_extra_provider_request():
     call = ResponseFunctionToolCall(
         type="function_call",
         name="speaker_memory_remember_name",
-        arguments='{"speaker_ref":"sr_1","name":"Михаил"}',
+        arguments='{"speaker_ref":"sr_model","name":"Михаил"}',
         call_id="call_1",
         id="fc_1",
         status="completed",
     )
-    req = GenerateResponseRequest(runtime_config=rc, forced_tool_call=call)
+    req = GenerateResponseRequest(runtime_config=rc, forced_tool_call=call, speaker_ref="sr_trusted")
 
     outputs = list(handler.process(req))
 
@@ -186,6 +186,8 @@ def test_forced_tool_call_is_emitted_without_an_extra_provider_request():
     assert len(tool_chunks) == 1
     assert tool_chunks[0].tools[0].name == "speaker_memory_remember_name"
     assert isinstance(outputs[-1], EndOfResponse)
+    assert '"speaker_ref":"sr_trusted"' in tool_chunks[0].tools[0].arguments
+    assert '"speaker_ref":"sr_model"' not in tool_chunks[0].tools[0].arguments
     # The only request seen by the fake client is the constructor warmup.
     assert handler.client.chat.completions.last_kwargs["messages"][0]["content"] == "You are a helpful assistant"
 

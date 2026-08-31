@@ -708,14 +708,20 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
 
     @staticmethod
     def _inject_speaker_ref(item: ResponseFunctionToolCall, speaker_ref: str | None) -> ResponseFunctionToolCall:
-        """Complete a model tool call with trusted turn metadata, never model data."""
+        """Complete a model tool call with trusted turn metadata, never model data.
+
+        A model-generated ``speaker_ref`` is untrusted: it may be stale or
+        copied from the conversation. Always replace it with the short-lived
+        reference issued for this audio turn before a memory tool reaches the
+        executor.
+        """
         if not speaker_ref or not item.name.startswith("speaker_memory_"):
             return item
         try:
             arguments = json.loads(item.arguments or "{}")
         except (TypeError, ValueError):
             return item
-        if not isinstance(arguments, dict) or arguments.get("speaker_ref"):
+        if not isinstance(arguments, dict):
             return item
         arguments["speaker_ref"] = speaker_ref
         return item.model_copy(
