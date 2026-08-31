@@ -579,6 +579,7 @@ def _build_pipeline_unit(
         chat_size=chat_size,
         speculative_turns=speculative_turns,
         default_instructions=default_instructions,
+        required_instructions=default_instructions,
     )
 
     if module_kwargs.enable_live_transcription:

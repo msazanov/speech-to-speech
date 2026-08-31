@@ -55,6 +55,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+try:
+    from speech_to_speech.speaker_memory.tools import TOOLS as SPEAKER_MEMORY_TOOLS
+except ImportError:  # Demo may still be run standalone without the package extra.
+    SPEAKER_MEMORY_TOOLS = []
+
 logger = logging.getLogger("s2s.search")
 
 SERPER_KEY = os.environ.get("SERPER_API_KEY", "").strip()
@@ -185,6 +190,12 @@ class SearchRequest(BaseModel):
     key: str | None = None
 
 
+class SpeakerMemoryToolRequest(BaseModel):
+    session_id: str
+    name: str
+    arguments: dict
+
+
 @app.get("/api/config")
 def config():
     """Client bootstrap: whether web search is available, whether the deploy runs
@@ -204,6 +215,7 @@ def config():
         "rtc": bool(SPEECH_TO_SPEECH_URL),
         "iceServers": RTC_ICE_SERVERS,
         "startupGreeting": STARTUP_GREETING,
+        "speakerMemoryTools": SPEAKER_MEMORY_TOOLS if SPEECH_TO_SPEECH_URL else [],
         "auth": AUTH_ENABLED,
     }
 
@@ -289,6 +301,36 @@ async def search(req: SearchRequest):
         answer = kg.get("description") or None
 
     return JSONResponse({"query": query, "answer": answer, "results": results})
+
+
+def _speaker_memory_tool_url(s2s_url: str) -> str:
+    parts = urlsplit(s2s_url)
+    scheme = {"ws": "http", "wss": "https"}.get(parts.scheme, parts.scheme)
+    return urlunsplit((scheme, parts.netloc, "/v1/speaker-memory/tool", "", ""))
+
+
+@app.post("/api/speaker-memory")
+async def speaker_memory_tool(req: SpeakerMemoryToolRequest):
+    """Proxy memory calls only to the deployment-pinned realtime service."""
+
+    if not SPEECH_TO_SPEECH_URL:
+        raise HTTPException(status_code=404, detail="Not found.")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as http:
+            response = await http.post(
+                _speaker_memory_tool_url(SPEECH_TO_SPEECH_URL),
+                json=req.model_dump(),
+            )
+    except httpx.RequestError as exc:
+        logger.warning("speaker-memory service unreachable: %r", exc)
+        raise HTTPException(status_code=502, detail="Speech service unreachable.")
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"detail": "Invalid speech service response."}
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=payload.get("detail", "Tool failed."))
+    return payload
 
 
 @app.post("/api/calls")

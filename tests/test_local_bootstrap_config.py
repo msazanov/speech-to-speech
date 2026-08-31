@@ -15,6 +15,7 @@ def test_local_profile_does_not_persist_conversation_text_without_explicit_opt_i
 
     assert profile.get("log_transcripts", False) is False
 HUGGINGVOICE_UNIT = ROOT / "deploy" / "systemd" / "huggingvoice.service"
+HUGGINGVOICE_WEB_UNIT = ROOT / "deploy" / "systemd" / "huggingvoice-web.service"
 
 
 def parsed_profile():
@@ -46,7 +47,8 @@ def test_profile_uses_local_ru_en_speech_backends():
     assert parsed.stt_backend.config["provider"] == "CPUExecutionProvider"
     assert parsed.stt_backend.config["threads"] == 6
     assert parsed.stt_backend.config["language"] == "auto"
-    assert parsed.module_kwargs.enable_live_transcription is False
+    assert parsed.module_kwargs.enable_live_transcription is True
+    assert parsed.module_kwargs.live_transcription_update_interval == 0.25
     assert parsed.vad_handler_kwargs.min_silence_ms == 500
     assert parsed.llm_backend.config["enable_lang_prompt"] is True
     assert parsed.module_kwargs.tts == "silero"
@@ -62,6 +64,9 @@ def test_profile_prompt_prefers_russian_without_forcing_english_terms():
     assert "По умолчанию отвечай по-русски" in prompt
     assert "явно говорит по-английски" in prompt
     assert "термин" in prompt
+    assert "вопросительные и восклицательные знаки" in prompt
+    assert "ха-ха" in prompt
+    assert "шёпот" in prompt
 
 
 def make_argv_recorder(tmp_path: Path) -> Path:
@@ -133,6 +138,19 @@ def test_huggingvoice_unit_uses_arbiter_without_owning_an_llm_service():
         "http://127.0.0.1:1919/v1",
         "gemma-4-e2b",
     ]
+
+
+def test_web_unit_pins_local_realtime_and_loads_private_search_environment():
+    unit = ConfigParser(interpolation=None, strict=False)
+    unit.read(HUGGINGVOICE_WEB_UNIT)
+
+    assert unit["Unit"]["Requires"] == "huggingvoice.service"
+    assert unit["Service"]["EnvironmentFile"] == "-%h/.config/huggingvoice/web.env"
+    assert "SPEECH_TO_SPEECH_URL=ws://127.0.0.1:8765/v1/realtime" in unit["Service"].get(
+        "Environment", ""
+    )
+    assert "SERPER" not in HUGGINGVOICE_WEB_UNIT.read_text()
+    assert "--host 127.0.0.1 --port 7860" in unit["Service"]["ExecStart"]
 
 
 def test_wait_for_llm_defaults_to_arbiter_gemma_model(tmp_path):

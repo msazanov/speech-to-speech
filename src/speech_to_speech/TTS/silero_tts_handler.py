@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from math import gcd
 from pathlib import Path
 from threading import Event
@@ -26,6 +27,8 @@ PIPELINE_SAMPLE_RATE = 16000
 SILERO_REPOSITORY = "snakers4/silero-models:d9355348e2781dc8fa25a135d1602c530afae24c"
 SILERO_RUSSIAN_SPEAKERS = frozenset({"aidar", "baya", "kseniya", "xenia", "eugene"})
 SILERO_SAMPLE_RATES = frozenset({8000, 24000, 48000})
+_CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
+_LATIN_RE = re.compile(r"[A-Za-z]")
 
 
 def _resolve_silero_repository(torch_hub_dir: str | Path) -> str:
@@ -33,6 +36,24 @@ def _resolve_silero_repository(torch_hub_dir: str | Path) -> str:
     if cached_repository.is_dir():
         return str(cached_repository)
     return SILERO_REPOSITORY
+
+
+def _detect_tts_language(text: str, inherited: str | None) -> str:
+    """Prefer the generated script while keeping mixed technical RU text stable."""
+
+    inherited_code = (inherited or "").strip().lower().split("-", 1)[0]
+    cyrillic = len(_CYRILLIC_RE.findall(text))
+    latin = len(_LATIN_RE.findall(text))
+    if latin and not cyrillic:
+        return "en"
+    if cyrillic and not latin:
+        return "ru"
+    if cyrillic and latin:
+        if latin >= cyrillic * 4:
+            return "en"
+        if cyrillic >= latin * 2:
+            return "ru"
+    return inherited_code or "ru"
 
 
 class SileroTTSHandler(BaseHandler[TTSIn, TTSOut]):
@@ -118,13 +139,19 @@ class SileroTTSHandler(BaseHandler[TTSIn, TTSOut]):
         if speculative_turns:
             speculative_turns.commit(tts_input.turn_id, tts_input.turn_revision)
 
-        language_code = (tts_input.language_code or "").strip().lower().split("-", 1)[0]
+        language_code = _detect_tts_language(tts_input.text, tts_input.language_code)
         if language_code == "en" and getattr(self, "english_fallback", False):
             english_handler = getattr(self, "_english_handler", None)
             if english_handler is None:
                 english_handler = self._load_english_handler()
                 self._english_handler = english_handler
-            yield from english_handler.process(tts_input)
+            inherited_code = (tts_input.language_code or "").strip().lower().split("-", 1)[0]
+            english_input = (
+                tts_input
+                if inherited_code == "en"
+                else tts_input.model_copy(update={"language_code": "en"})
+            )
+            yield from english_handler.process(english_input)
             return
 
         cancel_scope = getattr(self, "cancel_scope", None)

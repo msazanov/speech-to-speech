@@ -11,6 +11,7 @@ import base64
 import time
 from queue import Empty, Queue
 from threading import Event as ThreadingEvent
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -162,6 +163,60 @@ class TestConnection:
             ) as ws:
                 assert ws.accepted_subprotocol == "realtime"
                 assert ws.receive_json()["type"] == "session.created"
+
+
+class TestSpeakerMemoryTools:
+    def test_tool_call_is_bound_to_the_active_pipeline_session(self, setup, monkeypatch):
+        app, *_ = setup
+        unit = app.state.pipeline_pool[0]
+        calls = []
+
+        async def execute(name, arguments):
+            calls.append((name, arguments))
+            return SimpleNamespace(output={"ok": True, "name": "Аркадий"}, create_response=False)
+
+        speaker_handler = SimpleNamespace(service=object(), conversation_id="conv_browser")
+        unit.handlers.append(speaker_handler)
+        monkeypatch.setattr(
+            "speech_to_speech.speaker_memory.tools.create_tool_executor",
+            lambda service, conversation_id_provider: execute,
+        )
+
+        with TestClient(app) as client:
+            with client.websocket_connect("/v1/realtime") as ws:
+                session_id = ws.receive_json()["session"]["id"]
+                response = client.post(
+                    "/v1/speaker-memory/tool",
+                    json={
+                        "session_id": session_id,
+                        "name": "speaker_memory_remember_name",
+                        "arguments": {"speaker_ref": "sr_live", "name": "Аркадий"},
+                    },
+                )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "output": {"ok": True, "name": "Аркадий"},
+            "create_response": False,
+        }
+        assert calls == [
+            ("speaker_memory_remember_name", {"speaker_ref": "sr_live", "name": "Аркадий"})
+        ]
+
+    def test_tool_call_rejects_an_expired_or_unknown_session(self, setup):
+        app, *_ = setup
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/speaker-memory/tool",
+                json={
+                    "session_id": "session_missing",
+                    "name": "speaker_memory_inspect",
+                    "arguments": {"speaker_ref": "sr_missing"},
+                },
+            )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Active realtime session not found."
 
     def test_second_connection_rejected(self, setup):
         app, *_ = setup

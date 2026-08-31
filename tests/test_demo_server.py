@@ -16,6 +16,64 @@ demo_auth = importlib.import_module("auth")
 demo_server = importlib.import_module("server")
 
 
+def test_config_exposes_native_speaker_memory_tool_schemas(monkeypatch):
+    monkeypatch.setattr(demo_server, "SPEECH_TO_SPEECH_URL", "ws://127.0.0.1:8765/v1/realtime")
+    monkeypatch.setattr(
+        demo_server,
+        "SPEAKER_MEMORY_TOOLS",
+        [{"type": "function", "name": "speaker_memory_inspect", "parameters": {}}],
+    )
+
+    payload = demo_server.config()
+
+    assert payload["speakerMemoryTools"] == [
+        {"type": "function", "name": "speaker_memory_inspect", "parameters": {}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_speaker_memory_proxy_uses_only_pinned_realtime_service(monkeypatch):
+    monkeypatch.setattr(demo_server, "SPEECH_TO_SPEECH_URL", "ws://127.0.0.1:8765/v1/realtime")
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"output": {"ok": True}, "create_response": False}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            assert kwargs["timeout"] == 5.0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return FakeResponse()
+
+    monkeypatch.setattr(demo_server.httpx, "AsyncClient", FakeClient)
+    request = demo_server.SpeakerMemoryToolRequest(
+        session_id="session_direct_1",
+        name="speaker_memory_inspect",
+        arguments={"speaker_ref": "sr_live"},
+    )
+
+    response = await demo_server.speaker_memory_tool(request)
+
+    assert response == {"output": {"ok": True}, "create_response": False}
+    assert calls == [
+        (
+            "http://127.0.0.1:8765/v1/speaker-memory/tool",
+            {"json": request.model_dump()},
+        )
+    ]
+
+
 def _mock_whoami(monkeypatch, payload):
     calls = []
 

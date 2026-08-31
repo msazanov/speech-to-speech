@@ -17,14 +17,14 @@ MODEL_NAME = "3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
 MODEL_SHA256 = "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b"
 
 
-def test_russian_profile_keeps_cpu_speaker_memory_gated_until_acoustic_proof() -> None:
+def test_russian_profile_enables_calibrated_cpu_speaker_memory() -> None:
     profile = json.loads(PROFILE.read_text())
     parsed = parse_arguments([str(PROFILE)])
 
-    assert profile["speaker_memory_enabled"] is False
+    assert profile["speaker_memory_enabled"] is True
     assert profile["speaker_memory_threads"] == 1
     assert profile["speaker_memory_model_path"].endswith(MODEL_NAME)
-    assert parsed.speaker_memory_kwargs.speaker_memory_enabled is False
+    assert parsed.speaker_memory_kwargs.speaker_memory_enabled is True
     assert parsed.speaker_memory_kwargs.speaker_memory_threads == 1
     assert parsed.speaker_memory_kwargs.speaker_memory_min_audio_ms == 700
 
