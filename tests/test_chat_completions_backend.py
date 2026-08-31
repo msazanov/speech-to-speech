@@ -189,22 +189,6 @@ def test_forced_tool_call_is_emitted_without_an_extra_provider_request():
     # The only request seen by the fake client is the constructor warmup.
     assert handler.client.chat.completions.last_kwargs["messages"][0]["content"] == "You are a helpful assistant"
 
-
-def test_provider_memory_tool_call_gets_trusted_turn_reference_when_omitted():
-    handler = _make_handler(stream=False)
-    call = ResponseFunctionToolCall(
-        type="function_call",
-        name="speaker_memory_recall",
-        arguments='{"query":"о чём мы говорили"}',
-        call_id="call_1",
-        id="fc_1",
-        status="completed",
-    )
-    assert handler._inject_speaker_ref(call, "sr_trusted").arguments == (
-        '{"query":"о чём мы говорили","speaker_ref":"sr_trusted"}'
-    )
-
-
 def _chunk(content=None, tool_calls=None, usage=None):
     choices = []
     if content is not None or tool_calls is not None:

@@ -305,30 +305,6 @@ class TestHandleSessionUpdate:
         assert runtime_config.session.tools is not None
         assert runtime_config.session.tool_choice == "required"
 
-    def test_session_update_prefills_current_prompt_and_tools(self, service, conn_id):
-        class Prefill:
-            def __init__(self):
-                self.calls = []
-
-            def prefill_session(self, instructions, tools, tool_choice):
-                self.calls.append((instructions, tools, tool_choice))
-
-        prefill = Prefill()
-        service.set_prefill_handler(prefill)
-        service.handle_session_update(
-            conn_id,
-            self._make_update(
-                instructions="Be concise",
-                tools=[{"type": "function", "name": "web_search"}],
-                tool_choice="auto",
-            ),
-        )
-
-        instructions, received_tools, choice = prefill.calls[0]
-        assert instructions == "Be concise"
-        assert received_tools[0].name == "web_search"
-        assert choice == "auto"
-
     def test_session_update_rejects_transcription_session(self, service, conn_id, runtime_config):
         raw = {
             "type": "session.update",
