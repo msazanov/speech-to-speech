@@ -854,7 +854,7 @@ function flashPreview() {
  * Run the function the model called. The Agents SDK preserves call order and
  * submits the returned value to the session.
  * @param {string} name @param {string} argsJson @param {string} callId
- * @returns {Promise<{ output: string, image?: string }>}
+ * @returns {Promise<{ output: string, image?: string, createResponse?: boolean }>}
  */
 async function runTool(name, argsJson, callId) {
   if (!client) return { output: "" };
@@ -864,8 +864,8 @@ async function runTool(name, argsJson, callId) {
   if (DEBUG) console.debug(`[tool] run name=${name} callId=${JSON.stringify(callId)} args=${argsJson}`);
   if (!callId) console.warn("[tool] empty call_id — the backend didn't tag the call, can't return a function_call_output");
 
-  /** @type {{ output: string, image?: string }} */
-  let result = { output: "" };
+  /** @type {{ output: string, image?: string, createResponse?: boolean }} */
+  let result = { output: "", createResponse: true };
   try {
     if (name === "web_search") {
       const query = typeof args.query === "string" ? args.query : "";
@@ -891,6 +891,9 @@ async function runTool(name, argsJson, callId) {
       try { payload = await response.json(); } catch { /* handled below */ }
       if (!response.ok) throw new Error(payload.detail || `speaker memory error (${response.status})`);
       result.output = JSON.stringify(payload.output ?? payload);
+      // Keep the native tool contract: memory mutations acknowledge the write
+      // without opening a recursive second model turn.
+      result.createResponse = payload.create_response !== false;
     } else {
       result.output = `Unknown tool: ${name}`;
     }
