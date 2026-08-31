@@ -51,11 +51,14 @@ def test_profile_uses_local_ru_en_speech_backends():
     assert parsed.module_kwargs.live_transcription_update_interval == 0.25
     assert parsed.vad_handler_kwargs.min_silence_ms == 500
     assert parsed.llm_backend.config["enable_lang_prompt"] is True
-    assert parsed.module_kwargs.tts == "silero"
-    assert parsed.tts_backend.config["speaker"] == "xenia"
-    assert parsed.tts_backend.config["sample_rate"] == 24000
-    assert parsed.tts_backend.config["threads"] == 6
-    assert parsed.tts_backend.config["english_fallback"] is True
+    assert parsed.module_kwargs.tts == "local"
+    assert parsed.tts_backend.config["default_backend"] == "silero"
+    assert parsed.tts_backend.config["silero_voice"] == "xenia"
+    assert parsed.tts_backend.config["silero_sample_rate"] == 24000
+    assert parsed.tts_backend.config["silero_threads"] == 6
+    assert parsed.tts_backend.config["silero_english_fallback"] is True
+    assert parsed.tts_backend.config["rhvoice_voice"] == "Aleksandr"
+    assert parsed.tts_backend.config["rhvoice_executable"].endswith("/RHVoice-test")
 
 
 def test_profile_prompt_prefers_russian_without_forcing_english_terms():

@@ -276,6 +276,26 @@ def test_openai_tts_backend_constructs_through_registry(monkeypatch):
     assert isinstance(tts, OpenAICompatibleTTSHandler)
 
 
+def test_local_tts_backend_normalizes_both_cpu_engines():
+    args = parse_arguments(
+        [
+            "--tts",
+            "local",
+            "--local_tts_default_backend",
+            "rhvoice",
+            "--local_tts_rhvoice_voice",
+            "Mikhail",
+            "--local_tts_rhvoice_executable",
+            "/opt/rhvoice/RHVoice-test",
+        ]
+    )
+
+    assert args.tts_backend.name == "local"
+    assert args.tts_backend.config["default_backend"] == "rhvoice"
+    assert args.tts_backend.config["rhvoice_voice"] == "Mikhail"
+    assert args.tts_backend.config["rhvoice_executable"] == "/opt/rhvoice/RHVoice-test"
+
+
 def test_openai_stt_backend_constructs_through_registry(monkeypatch):
     from speech_to_speech.STT.openai_compatible_handler import OpenAICompatibleSTTHandler
 

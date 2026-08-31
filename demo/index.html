@@ -218,7 +218,7 @@
             <li class="pipe-stage">
               <span class="pipe-tag">TTS</span>
               <span class="pipe-job">speaks it back</span>
-              <a class="pipe-model" href="https://github.com/snakers4/silero-models" target="_blank" rel="noopener">Silero v5.5 RU · xenia<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg></a>
+              <a class="pipe-model" href="https://github.com/RHVoice/RHVoice" target="_blank" rel="noopener">Silero v5.5 RU / RHVoice · selectable<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg></a>
             </li>
             <li class="pipe-endpoint">The orb replies</li>
           </ol>
@@ -263,17 +263,20 @@
 
             <div class="field-row">
               <label class="field">
+                <span>TTS backend</span>
+                <select id="tts-backend">
+                  <option value="silero" selected>Silero v5.5 RU</option>
+                  <option value="rhvoice">RHVoice</option>
+                </select>
+              </label>
+              <label class="field">
                 <span>Voice</span>
                 <select id="voice">
-                  <option value="Aiden" selected>Aiden</option>
-                  <option value="Ryan">Ryan</option>
-                  <option value="Dylan">Dylan</option>
-                  <option value="Eric">Eric</option>
-                  <option value="Ono_Anna">Ono_Anna</option>
-                  <option value="Serena">Serena</option>
-                  <option value="Sohee">Sohee</option>
-                  <option value="Uncle_Fu">Uncle_Fu</option>
-                  <option value="Vivian">Vivian</option>
+                  <option value="xenia" selected>Xenia</option>
+                  <option value="kseniya">Kseniya</option>
+                  <option value="aidar">Aidar</option>
+                  <option value="eugene">Eugene</option>
+                  <option value="baya">Baya</option>
                 </select>
               </label>
             </div>

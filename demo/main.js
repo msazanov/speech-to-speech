@@ -21,14 +21,21 @@ import { S2sRealtimeClient } from "./s2s-realtime-client.js";
 import { $, truncateError, DEBUG } from "./ui/dom.js";
 import { ChatView } from "./ui/chat.js";
 import { Account } from "./ui/account.js";
+import {
+  decodeTtsSelection,
+  encodeTtsSelection,
+  voicesForTtsBackend,
+} from "./ui/tts-options.js";
 
-const DEFAULT_VOICE = "Aiden";
+const DEFAULT_TTS_BACKEND = "silero";
+const DEFAULT_VOICE = "xenia";
 const DEFAULT_INSTRUCTIONS = "You are a friendly voice assistant.";
 
 const STORAGE_KEYS = {
   // Direct s2s server URL, used only when the deploy has no LOAD_BALANCER_URL
   // (in LB mode the browser never learns the LB address — it POSTs /api/session).
   directUrl: "s2s.ws.directUrl",
+  ttsBackend: "s2s.ws.ttsBackend",
   voice: "s2s.ws.voice",
   instructions: "s2s.ws.instructions",
   tools: "s2s.ws.tools",
@@ -107,9 +114,13 @@ const SNAPSHOT_LADDER = /** @type {[number, number][]} */ ([
 ]);
 
 function loadSettings() {
+  const storedSelection = decodeTtsSelection(localStorage.getItem(STORAGE_KEYS.voice));
+  const storedBackend = localStorage.getItem(STORAGE_KEYS.ttsBackend) || storedSelection.backend;
+  const selection = decodeTtsSelection(encodeTtsSelection(storedBackend, storedSelection.voice));
   return {
     directUrl: localStorage.getItem(STORAGE_KEYS.directUrl) || "",
-    voice: localStorage.getItem(STORAGE_KEYS.voice) || DEFAULT_VOICE,
+    ttsBackend: selection.backend,
+    voice: selection.voice,
     instructions: localStorage.getItem(STORAGE_KEYS.instructions) || DEFAULT_INSTRUCTIONS,
     noiseGate: loadGateThreshold(),
     // Default WebSocket: the proven path stays the first-run experience.
@@ -135,7 +146,8 @@ function loadGateThreshold() {
 /** @param {ReturnType<typeof loadSettings>} s */
 function saveSettings(s) {
   localStorage.setItem(STORAGE_KEYS.directUrl, s.directUrl);
-  localStorage.setItem(STORAGE_KEYS.voice, s.voice);
+  localStorage.setItem(STORAGE_KEYS.ttsBackend, s.ttsBackend);
+  localStorage.setItem(STORAGE_KEYS.voice, encodeTtsSelection(s.ttsBackend, s.voice));
   localStorage.setItem(STORAGE_KEYS.instructions, s.instructions);
   localStorage.setItem(STORAGE_KEYS.noiseGate, String(s.noiseGate));
   localStorage.setItem(STORAGE_KEYS.transport, s.transport);
@@ -261,6 +273,8 @@ const inputTransport = $("#transport");
 const transportHint = $("#transport-hint");
 /** @type {HTMLElement} */
 const gateField = $("#gate-field");
+/** @type {HTMLSelectElement} */
+const inputTtsBackend = $("#tts-backend");
 /** @type {HTMLSelectElement} */
 const inputVoice = $("#voice");
 /** @type {HTMLSelectElement} */
@@ -458,6 +472,8 @@ function setCaption(text, kind = "") {
 
 function openSettings() {
   syncConnectionUi();
+  inputTtsBackend.value = settings.ttsBackend;
+  populateVoiceOptions(settings.ttsBackend, settings.voice);
   inputVoice.value = settings.voice;
   inputInstructions.value = settings.instructions;
   syncGateUi();
@@ -465,6 +481,24 @@ function openSettings() {
   void refreshAudioDeviceLists();
   settingsModal.showModal();
 }
+
+/** @param {string} backend @param {string} selected */
+function populateVoiceOptions(backend, selected = "") {
+  inputVoice.replaceChildren();
+  for (const voice of voicesForTtsBackend(backend)) {
+    const option = document.createElement("option");
+    option.value = voice.id;
+    option.textContent = voice.label;
+    inputVoice.append(option);
+  }
+  if ([...inputVoice.options].some((option) => option.value === selected)) {
+    inputVoice.value = selected;
+  }
+}
+
+inputTtsBackend.addEventListener("change", () => {
+  populateVoiceOptions(inputTtsBackend.value);
+});
 
 /** dB position (clamped to the slider axis) as a 0..1 fraction of the track.
  * @param {number} db */
@@ -1002,6 +1036,7 @@ function createResumedAudioContext() {
 function readSettingsFromForm() {
   return {
     directUrl: allowDirect && !pinnedUrl ? inputLbUrl.value.trim() : settings.directUrl,
+    ttsBackend: inputTtsBackend.value || DEFAULT_TTS_BACKEND,
     voice: inputVoice.value || DEFAULT_VOICE,
     instructions: inputInstructions.value.trim() || DEFAULT_INSTRUCTIONS,
     noiseGate: readGateThreshold(),
@@ -1103,7 +1138,10 @@ settingsForm.addEventListener("submit", (event) => {
   // output can switch live when the browser supports AudioContext.setSinkId;
   // mic device changes need a Restart (new getUserMedia stream).
   if (client && LIVE_STATES.has(currentState)) {
-    client.updateSession({ voice: settings.voice, instructions: settings.instructions });
+    client.updateSession({
+      voice: encodeTtsSelection(settings.ttsBackend, settings.voice),
+      instructions: settings.instructions,
+    });
     if (typeof client.setAudioOutputDevice === "function") {
       void client.setAudioOutputDevice(settings.audioOutputId);
     }
@@ -1422,7 +1460,7 @@ async function doStart(audioContext = null) {
   // a still-pending grant just means the snapshot tool isn't ready yet.
 
   const common = {
-    voice: settings.voice,
+    voice: encodeTtsSelection(settings.ttsBackend, settings.voice),
     instructions: settings.instructions,
     startupGreeting,
     acquireMic: acquireMicStream,

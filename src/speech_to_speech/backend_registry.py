@@ -20,6 +20,7 @@ from speech_to_speech.arguments_classes.faster_whisper_stt_arguments import (
 from speech_to_speech.arguments_classes.gigaam_onnx_stt_arguments import GigaAMONNXSTTHandlerArguments
 from speech_to_speech.arguments_classes.kokoro_tts_arguments import KokoroTTSHandlerArguments
 from speech_to_speech.arguments_classes.language_model_arguments import LanguageModelHandlerArguments
+from speech_to_speech.arguments_classes.local_tts_arguments import LocalTTSHandlerArguments
 from speech_to_speech.arguments_classes.mlx_audio_whisper_arguments import (
     MLXAudioWhisperSTTHandlerArguments,
 )
@@ -35,6 +36,7 @@ from speech_to_speech.arguments_classes.qwen3_tts_arguments import Qwen3TTSHandl
 from speech_to_speech.arguments_classes.responses_api_language_model_arguments import (
     ResponsesApiLanguageModelHandlerArguments,
 )
+from speech_to_speech.arguments_classes.rhvoice_tts_arguments import RHVoiceTTSHandlerArguments
 from speech_to_speech.arguments_classes.silero_tts_arguments import SileroTTSHandlerArguments
 from speech_to_speech.arguments_classes.supertonic_tts_arguments import SupertonicTTSHandlerArguments
 from speech_to_speech.arguments_classes.whisper_stt_arguments import WhisperSTTHandlerArguments
@@ -457,6 +459,31 @@ LLM_BACKENDS = build_backend_registry(
 TTS_BACKENDS = build_backend_registry(
     "tts",
     [
+        BackendSpec(
+            "local",
+            "tts",
+            LocalTTSHandlerArguments,
+            _simple_handler_factory(
+                "speech_to_speech.TTS.local_tts_handler",
+                "LocalTTSHandler",
+                setup_should_listen=True,
+                context_kwargs=True,
+            ),
+            config_prefix="local_tts",
+            required_extra="silero",
+        ),
+        BackendSpec(
+            "rhvoice",
+            "tts",
+            RHVoiceTTSHandlerArguments,
+            _simple_handler_factory(
+                "speech_to_speech.TTS.rhvoice_tts_handler",
+                "RHVoiceTTSHandler",
+                setup_should_listen=True,
+                context_kwargs=True,
+            ),
+            config_prefix="rhvoice_tts",
+        ),
         BackendSpec(
             "chatTTS",
             "tts",

@@ -7,7 +7,7 @@ OpenAI-compatible endpoint FreeToken:
 - STT: GigaAM Multilingual CTC ONNX INT8, CPU, 6 потоков;
 - Speaker memory: подготовленный CAM++/3D-Speaker ONNX, CPU, 1 поток, локальная SQLite;
 - LLM: FreeToken arbiter `http://127.0.0.1:1919/v1`, модель `gemma-4-e2b`;
-- TTS: Silero `v5_5_ru`, голос `xenia`, CPU; Supertonic загружается лениво только для английского;
+- TTS: выбираемые из браузера Silero `v5_5_ru` и RHVoice, CPU; Supertonic загружается лениво только для английского Silero fallback;
 - Realtime API: `127.0.0.1:8765`.
 
 Русский — язык по умолчанию. Явно английская реплика получает английский ответ и
@@ -27,6 +27,7 @@ cd /home/random/dev/huggingvoice
 
 ```bash
 ./scripts/fetch-speaker-memory-model.sh
+./scripts/fetch-rhvoice-local.sh
 ```
 
 Скрипт проверяет SHA-256 до атомарной установки и не перезаписывает существующий
@@ -142,7 +143,7 @@ PipeWire-устройств.
 - Chat Completions: `max_tokens=64`, `temperature=0.2`, thinking отключён через
   `chat_template_kwargs`, timeout 60 с, SDK retries 0;
 - GigaAM: `CPUExecutionProvider`, INT8, 6 потоков;
-- Silero: 24 кГц синтез с преобразованием в 16 кГц блоками по 512 samples;
+- Silero/RHVoice: 24 кГц синтез с преобразованием в 16 кГц блоками по 512 samples;
 - VAD: `min_silence_ms=500`, live transcription отключена.
 
 HuggingVoice держит STT/VAD/TTS на CPU и не управляет размещением LLM в RAM/VRAM.
