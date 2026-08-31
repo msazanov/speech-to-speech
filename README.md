@@ -186,6 +186,7 @@ This installs the package in editable mode and makes the `speech-to-speech` CLI 
 | TTS | [ChatTTS](https://github.com/2noise/ChatTTS) | CUDA / CPU | `chattts` |
 | TTS | [OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) | CUDA / Intel XPU / Apple Silicon | `omnivoice` |
 | TTS | [Silero v5.5 RU](https://github.com/snakers4/silero-models) | CPU | `silero` |
+| TTS | [RHVoice](https://github.com/RHVoice/RHVoice) | CPU | `rhvoice`, or browser-selectable through `local` |
 | TTS | [Supertonic](https://github.com/supertone-inc/supertonic) | CPU | `supertonic` |
 | TTS | [MMS TTS](https://huggingface.co/docs/transformers/model_doc/mms) | CUDA / CPU | built-in |
 | TTS | OpenAI-compatible `/v1/audio/speech` endpoint | local or remote HTTP server | built-in |

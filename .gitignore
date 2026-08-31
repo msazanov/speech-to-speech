@@ -169,6 +169,9 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# Local speech models and user-local native runtimes are fetched by scripts.
+models/
 .dmypy.json
 dmypy.json
 
