@@ -2274,6 +2274,15 @@ body.cam-on .footer {
   align-items: center;
   gap: 5px;
 }
+
+/* This local fork does not use the hosted demo providers or original-space
+ * author strip. Keep the upstream markup out of the visible local identity. */
+.ident-meta .cerebras-credit,
+.ident-meta .ident-row:first-child .sep,
+.ident-meta .ident-row:nth-child(2),
+.about-pipeline .pipe-note {
+  display: none;
+}
 .cerebras-mark {
   width: 14px;
   height: 14px;

@@ -651,6 +651,14 @@ class RealtimeService:
         cfg = st.runtime_config
         transcript = event.transcript
         llm_transcript = add_speaker_context(transcript, event.speaker)
+        if event.speaker is not None:
+            person_id = event.speaker.candidate.person_id if event.speaker.candidate is not None else "unknown"
+            logger.info(
+                "Speaker context injected voice=%s state=%s person_id=%s",
+                event.speaker.voice_id or "unknown",
+                event.speaker.state.value,
+                person_id,
+            )
         if transcript:
             if same_speculative_turn and st.speculative_user_item_id:
                 replaced = cfg.chat.replace_user_message_text(st.speculative_user_item_id, llm_transcript)

@@ -11,6 +11,22 @@ _CONTEXT_CLOSE = "</huggingvoice_speaker_context>"
 _MAX_NAME_LENGTH = 80
 
 
+def public_speaker_metadata(attribution: SpeakerAttribution | None) -> dict[str, object] | None:
+    """Return display-only identity data, never the mutation-capable speaker reference."""
+
+    if attribution is None:
+        return None
+    payload: dict[str, object] = {"state": attribution.state.value}
+    if attribution.voice_id is not None:
+        payload["voice_id"] = attribution.voice_id
+    if attribution.state.value == "known" and attribution.candidate is not None:
+        payload["person"] = {
+            "person_id": attribution.candidate.person_id,
+            "name": attribution.candidate.name[:_MAX_NAME_LENGTH],
+        }
+    return payload
+
+
 def format_speaker_context(attribution: SpeakerAttribution) -> str:
     """Serialize only the compact identity indicator as escaped JSON data."""
 

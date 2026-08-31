@@ -22,6 +22,23 @@ const WRENCH_PATH = `<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l
 const CHAT_BUBBLE_SVG = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
 const EMPTY_STATE_HTML = `<div id="chat-empty" class="chat-empty">${CHAT_BUBBLE_SVG}<span class="chat-empty-title">No messages yet</span><span class="chat-empty-hint">Tap the orb and start talking</span></div>`;
 
+/** @param {{ voice_id?: string, state?: string, person?: { name?: string } } | null | undefined} speaker */
+export function speakerDisplayLabel(speaker) {
+  if (speaker?.state === "known" && speaker.person?.name) return speaker.person.name;
+  return speaker?.voice_id || "Voice…";
+}
+
+/** @param {string | null | undefined} voiceId */
+export function speakerDisplayColor(voiceId) {
+  if (!voiceId) return "";
+  let hash = 2166136261;
+  for (const char of voiceId) {
+    hash ^= char.codePointAt(0) || 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return `hsl(${Math.abs(hash) % 360} 78% 66%)`;
+}
+
 export class ChatView {
   /**
    * @param {{ onUserAudioPlaybackChange?: (playing: boolean) => void }} [options]
@@ -133,9 +150,20 @@ export class ChatView {
   _buildMessageEl({ container, prefix, role, text, partial = false }) {
     const el = document.createElement("div");
     el.className = `${container} ${role}`;
-    const label = role === "user" ? "You" : "Assistant";
+    const label = role === "user" ? "Voice…" : "Assistant";
     el.innerHTML = `<div class="${prefix}-role">${label}</div><div class="${prefix}-body${partial ? " partial" : ""}"${text ? "" : " hidden"}>${escHtml(text)}</div>`;
     return el;
+  }
+
+  /** @param {HTMLElement | null} el @param {object | null | undefined} speaker */
+  _applySpeakerIdentity(el, speaker) {
+    if (!el || !speaker) return;
+    const label = /** @type {HTMLElement | null} */ (el.querySelector(".hist-role, .bubble-role"));
+    if (!label) return;
+    label.textContent = speakerDisplayLabel(speaker);
+    label.title = `Speaker ${speaker.state || "unknown"}`;
+    const color = speakerDisplayColor(speaker.voice_id);
+    if (color) label.style.color = color;
   }
 
   // ── Ephemeral bubbles ───────────────────────────────────────────────────
@@ -478,7 +506,7 @@ export class ChatView {
 
   /**
    * A streamed transcript delta (user or assistant).
-   * @param {{ role: "user" | "assistant"; text: string; partial: boolean; itemId?: string; responseId?: string }} d
+   * @param {{ role: "user" | "assistant"; text: string; partial: boolean; itemId?: string; responseId?: string; speaker?: object }} d
    */
   onTranscript(d) {
     if (DEBUG) console.debug(`[ui] transcript role=${d.role} partial=${d.partial} item=${d.itemId} resp=${d.responseId} text=${JSON.stringify(d.text)}`);
@@ -491,6 +519,7 @@ export class ChatView {
 
       const hist = this._ensureUserHist(id);
       this._updateHistMsg(hist, text, d.partial);
+      this._applySpeakerIdentity(hist, d.speaker);
 
       // One ephemeral bubble per active item. Purely timer-based: the timer is
       // refreshed on every delta, so it stays while the user keeps talking and
@@ -506,6 +535,7 @@ export class ChatView {
       } else {
         this._updateBubbleText(this._activeUserBubble, text);
       }
+      this._applySpeakerIdentity(this._activeUserBubble, d.speaker);
       this._bumpDismiss(this._activeUserBubble, 6000);
       this._markUnread();
     } else if (d.role === "assistant") {

@@ -50,3 +50,18 @@ def test_colorize_can_be_disabled_for_redirected_output() -> None:
     line = "Speaker attributed voice=v_aaa state=unknown"
 
     assert watch_voice_log.colorize(line, color=False) == "[VOICE] " + line
+
+
+def test_compact_line_keeps_identity_context_and_turn_boundaries() -> None:
+    assert watch_voice_log.compact_line(
+        "Speaker context injected voice=v_aaa state=unknown person_id=unknown"
+    ) == "Speaker context injected voice=v_aaa state=unknown person_id=unknown"
+    assert watch_voice_log.compact_line(
+        "LLM response model=gemma total_ms=42 ttft_ms=20 answer=привет"
+    ) == "LLM response model=gemma total_ms=42 ttft_ms=20 answer=привет"
+
+
+def test_compact_line_drops_framework_noise_and_duplicate_accounting() -> None:
+    assert watch_voice_log.compact_line("httpx - INFO - HTTP Request: POST /v1") is None
+    assert watch_voice_log.compact_line("Token usage (response): input=10, output=2") is None
+    assert watch_voice_log.compact_line("ChatCompletionsApiModelHandler: 0.086 s") is None
