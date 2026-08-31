@@ -299,6 +299,10 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
                 {"role": "system", "content": "You are a helpful assistant"},
                 {"role": "user", "content": "Hello"},
             ],
+            # Warmup only needs to populate the provider's model/KV path; a
+            # full generated answer here needlessly delays pipeline startup.
+            max_tokens=1,
+            temperature=0,
             extra_body=self._extra_body,
             timeout=self.request_timeout,
         )

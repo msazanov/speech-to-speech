@@ -130,6 +130,8 @@ def test_warmup_uses_request_scoped_sdk_retries():
     handler = _make_handler()
 
     assert handler.client.last_options == {"max_retries": base_mod.WARMUP_MAX_RETRIES}
+    assert handler.client.chat.completions.last_kwargs["max_tokens"] == 1
+    assert handler.client.chat.completions.last_kwargs["temperature"] == 0
 
 
 def test_session_prefill_uses_current_prompt_and_tools_without_mutating_chat():
