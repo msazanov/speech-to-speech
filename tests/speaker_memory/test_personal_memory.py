@@ -7,7 +7,11 @@ import numpy as np
 import pytest
 
 from speech_to_speech.speaker_memory.policy import SPEAKER_MEMORY_POLICY
-from speech_to_speech.speaker_memory.service import IdentityNotConfirmed, SpeakerMemoryService
+from speech_to_speech.speaker_memory.service import (
+    IdentityNotConfirmed,
+    InvalidPersonCandidate,
+    SpeakerMemoryService,
+)
 from speech_to_speech.speaker_memory.store import SpeakerMemoryStore
 from speech_to_speech.speaker_memory.tracker import SpeakerTracker
 
@@ -78,6 +82,36 @@ def test_personal_facts_are_isolated_between_people(memory) -> None:
     service.remember_fact(arkady.speaker_ref, "Кодовое слово: кедр", conversation_id="conv_1")
 
     assert service.recall(andrey.speaker_ref, query="кедр", conversation_id="conv_1") == []
+
+
+def test_hallucinated_existing_person_id_cannot_unlock_their_facts(memory) -> None:
+    store, tracker, service = memory
+    arkady = known_speaker(memory, vector=[1.0, 0.0], name="Аркадий", turn="turn_1")
+    service.remember_fact(arkady.speaker_ref, "Кодовое слово: кедр", conversation_id="conv_1")
+    arkady_attribution = service.inspect(arkady.speaker_ref, conversation_id="conv_1")
+    assert arkady_attribution.candidate is not None
+    unknown = attributed(tracker, [0.0, 1.0], turn="turn_2")
+
+    with pytest.raises(InvalidPersonCandidate):
+        service.confirm(unknown.speaker_ref, arkady_attribution.candidate.person_id, conversation_id="conv_1")
+    with pytest.raises(IdentityNotConfirmed):
+        service.recall(unknown.speaker_ref, query="кедр", conversation_id="conv_1")
+    assert store.resolve_person_candidates(unknown.voice_id) == []
+
+
+def test_same_name_from_new_voice_creates_separate_private_person(memory) -> None:
+    _store, tracker, service = memory
+    first = known_speaker(memory, vector=[1.0, 0.0], name="Аркадий", turn="turn_1")
+    service.remember_fact(first.speaker_ref, "Первый любит чай", conversation_id="conv_1")
+    second = attributed(tracker, [0.0, 1.0], turn="turn_2")
+
+    second_identity = service.remember_name(second.speaker_ref, "Аркадий", conversation_id="conv_1")
+    first_identity = service.inspect(first.speaker_ref, conversation_id="conv_1")
+
+    assert second_identity.candidate is not None
+    assert first_identity.candidate is not None
+    assert second_identity.candidate.person_id != first_identity.candidate.person_id
+    assert service.recall(second.speaker_ref, query="чай", conversation_id="conv_1") == []
 
 
 def test_explicit_fact_and_all_fact_forgetting(memory) -> None:

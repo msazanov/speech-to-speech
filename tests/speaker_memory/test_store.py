@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 
 import numpy as np
 import pytest
@@ -9,6 +10,7 @@ from speech_to_speech.speaker_memory.models import (
     ExpiredSpeakerReference,
     InvalidEmbedding,
     SpeakerReferenceConversationMismatch,
+    UnknownSpeakerReference,
 )
 from speech_to_speech.speaker_memory.store import SpeakerMemoryStore
 
@@ -43,6 +45,22 @@ def test_voice_cluster_round_trips_normalized_float32_centroid(store: SpeakerMem
     assert restored.centroid.tolist() == pytest.approx([0.6, 0.8])
     assert restored.sample_count == 1
     assert restored.quality_weight == pytest.approx(0.75)
+
+
+def test_store_enables_wal_and_foreign_keys(store: SpeakerMemoryStore) -> None:
+    assert store._connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert store._connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+
+def test_adaptive_centroid_weight_is_bounded(store: SpeakerMemoryStore) -> None:
+    voice = store.create_voice_cluster(np.array([1.0, 0.0], dtype=np.float32), quality=1.0)
+
+    for _ in range(30):
+        store.update_voice_cluster(voice.id, np.array([1.0, 0.01], dtype=np.float32), quality=1.0)
+
+    updated = store.get_voice_cluster(voice.id)
+    assert updated.sample_count == 31
+    assert updated.quality_weight == pytest.approx(20.0)
 
 
 @pytest.mark.parametrize(
@@ -103,6 +121,15 @@ def test_identity_candidates_aggregate_positive_and_negative_evidence(store: Spe
     ]
 
 
+def test_aggregate_identity_evidence_is_bounded(store: SpeakerMemoryStore) -> None:
+    voice = store.create_voice_cluster(np.array([1.0, 0.0], dtype=np.float32), quality=1.0)
+    person = store.create_person("Аркадий")
+    for _ in range(20):
+        store.add_identity_evidence(voice.id, person.id, kind="passive_match", weight=1.0)
+
+    assert store.resolve_person_candidates(voice.id)[0].evidence_score == pytest.approx(10.0)
+
+
 def test_person_name_is_normalized_for_reuse_without_losing_display_form(store: SpeakerMemoryStore) -> None:
     first = store.create_person("  Аркадий  ")
     second = store.create_person("аркадий")
@@ -124,3 +151,88 @@ def test_sensitive_values_are_not_written_to_normal_logs(
     assert "Совершенно Секретное Имя" not in log_text
     assert "0.25" not in log_text
     assert "0.75" not in log_text
+
+
+def test_expired_references_and_unneeded_observations_are_pruned(tmp_path, clock: MutableClock) -> None:
+    store = SpeakerMemoryStore(tmp_path / "retention.sqlite3", clock=clock, observation_retention_days=1)
+    voice = store.create_voice_cluster(np.array([1.0, 0.0], dtype=np.float32), quality=1.0)
+    observation = store.create_observation(
+        voice.id,
+        turn_id="turn_old",
+        turn_revision=0,
+        conversation_id="conv_old",
+        quality=1.0,
+    )
+    reference = store.issue_reference(observation.id, conversation_id="conv_old", ttl_s=10)
+    clock.now += 2 * 86400
+
+    removed = store.prune_expired()
+
+    assert removed == {"references": 1, "observations": 1}
+    with pytest.raises(UnknownSpeakerReference):
+        store.resolve_reference(reference, conversation_id="conv_old")
+    store.close()
+
+
+def test_retention_prunes_observation_but_preserves_detached_identity_audit(
+    tmp_path, clock: MutableClock
+) -> None:
+    store = SpeakerMemoryStore(tmp_path / "audit-retention.sqlite3", clock=clock, observation_retention_days=1)
+    voice = store.create_voice_cluster(np.array([1.0, 0.0], dtype=np.float32), quality=1.0)
+    person = store.create_person("Аркадий")
+    observation = store.create_observation(
+        voice.id,
+        turn_id="turn_old",
+        turn_revision=0,
+        conversation_id="conv_old",
+        quality=1.0,
+    )
+    store.add_identity_evidence(
+        voice.id,
+        person.id,
+        kind="self_introduction",
+        weight=3.0,
+        observation_id=observation.id,
+    )
+    clock.now += 2 * 86400
+
+    removed = store.prune_expired()
+
+    assert removed["observations"] == 1
+    assert store.resolve_person_candidates(voice.id)[0].evidence_score == pytest.approx(3.0)
+    evidence = store._connection.execute(
+        "SELECT observation_id FROM voice_person_evidence WHERE voice_id = ?", (voice.id,)
+    ).fetchone()
+    assert evidence["observation_id"] is None
+    store.close()
+
+
+def test_schema_v2_database_migrates_to_current_version(tmp_path) -> None:
+    path = tmp_path / "migration.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE schema_meta(version INTEGER NOT NULL)")
+    connection.execute("INSERT INTO schema_meta(version) VALUES (2)")
+    connection.commit()
+    connection.close()
+
+    store = SpeakerMemoryStore(path)
+
+    assert store._connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 3
+    assert store._connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='speaker_reference_candidates'"
+    ).fetchone()
+    store.close()
+
+
+def test_second_writer_obeys_bounded_busy_timeout(tmp_path) -> None:
+    path = tmp_path / "locked.sqlite3"
+    first = SpeakerMemoryStore(path, timeout_s=0.01)
+    second = SpeakerMemoryStore(path, timeout_s=0.01)
+    first._connection.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            second.create_voice_cluster(np.array([1.0, 0.0], dtype=np.float32), quality=1.0)
+    finally:
+        first._connection.rollback()
+        first.close()
+        second.close()

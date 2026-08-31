@@ -11,7 +11,7 @@
   "gigaam_onnx_stt_language": "auto",
   "enable_live_transcription": false,
   "min_silence_ms": 500,
-  "speaker_memory_enabled": true,
+  "speaker_memory_enabled": false,
   "speaker_memory_model_path": "/home/random/dev/huggingvoice/models/speaker-memory/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx",
   "speaker_memory_database_path": "/home/random/.local/share/huggingvoice/speaker-memory.sqlite3",
   "speaker_memory_threads": 1,

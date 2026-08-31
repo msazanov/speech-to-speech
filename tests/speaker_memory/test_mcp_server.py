@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -94,3 +95,16 @@ def test_mcp_adapter_delegates_to_service_with_bound_conversation(monkeypatch) -
 
 def test_importing_adapter_does_not_require_optional_mcp_sdk() -> None:
     assert callable(build_mcp_server)
+
+
+def test_mcp_adapter_returns_structured_retryable_database_lock(monkeypatch) -> None:
+    install_fake_mcp(monkeypatch)
+    service = RecordingService()
+    service.inspect = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        sqlite3.OperationalError("database is locked")
+    )
+    server = build_mcp_server(service, conversation_id_provider=lambda: "conv_1")
+
+    result = server.functions["speaker_memory_inspect"]("sr_1")
+
+    assert result == {"ok": False, "error": "speaker_memory_busy", "retryable": True}

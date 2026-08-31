@@ -461,8 +461,8 @@ git commit -m "feat: expose speaker memory over MCP"
 - [ ] **Step 1: Write failing local-profile tests**
 
 ```python
-def test_russian_profile_enables_cpu_speaker_memory(profile):
-    assert profile["speaker_memory_enabled"] is True
+def test_russian_profile_gates_cpu_speaker_memory_until_acoustic_proof(profile):
+    assert profile["speaker_memory_enabled"] is False
     assert profile["speaker_memory_threads"] == 1
     assert profile["speaker_memory_model_path"].endswith("3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx")
 ```
@@ -473,7 +473,7 @@ Test the fetch script URL/checksum statically and shell syntax with `bash -n`.
 
 Run: `PYTHONPATH=$PWD/src /home/random/dev/huggingvoice/.venv/bin/python -m pytest -q tests/speaker_memory/test_local_profile.py`
 
-Expected: fails because the profile has no speaker-memory keys.
+Expected: fails because the profile has no gated speaker-memory keys.
 
 - [ ] **Step 3: Implement profile, fetch script, smoke, and docs**
 

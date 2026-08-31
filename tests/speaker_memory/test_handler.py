@@ -45,7 +45,7 @@ def bare_handler(extractor: FakeExtractor, tracker: FakeTracker, *, min_audio_ms
 
 def audio(*, samples: int = 16000, mode: str = "final") -> VADAudio:
     return VADAudio(
-        audio=np.ones(samples, dtype=np.float32),
+        audio=np.full(samples, 0.1, dtype=np.float32),
         mode=mode,
         turn_id="turn_1",
         turn_revision=0,
@@ -75,6 +75,28 @@ def test_short_final_audio_passes_through_without_inference() -> None:
 
     assert getattr(result, "speaker", None) is None
     assert extractor.calls == 0
+
+
+def test_low_signal_final_audio_is_rejected_before_embedding() -> None:
+    extractor = FakeExtractor()
+    tracker = FakeTracker()
+    tracker.minimum_quality = 0.5
+    handler = bare_handler(extractor, tracker)
+
+    result = list(
+        handler.process(
+            VADAudio(
+                audio=np.zeros(16000, dtype=np.float32),
+                mode="final",
+                turn_id="turn_silent",
+                turn_revision=0,
+            )
+        )
+    )[0]
+
+    assert result.speaker is None
+    assert extractor.calls == 0
+    assert tracker.calls == []
 
 
 def test_embedding_failure_keeps_pipeline_usable_without_logging_sensitive_message(caplog) -> None:

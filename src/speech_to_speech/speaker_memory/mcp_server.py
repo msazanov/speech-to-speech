@@ -10,6 +10,17 @@ from typing import Any
 
 from .service import SpeakerMemoryService
 from .store import SpeakerMemoryStore
+from .tools import tool_error_output
+
+
+def _tool_call(operation: Callable[[], Any]) -> Any:
+    try:
+        return operation()
+    except Exception as exc:
+        output = tool_error_output(exc)
+        if output is None:
+            raise
+        return output
 
 
 def build_mcp_server(
@@ -30,34 +41,42 @@ def build_mcp_server(
 
     @server.tool()
     def speaker_memory_inspect(speaker_ref: str) -> dict[str, Any]:
-        return service.inspect(
-            speaker_ref,
-            conversation_id=conversation_id_provider(),
-        ).model_dump(mode="json", exclude_none=True)
+        return _tool_call(
+            lambda: service.inspect(
+                speaker_ref,
+                conversation_id=conversation_id_provider(),
+            ).model_dump(mode="json", exclude_none=True)
+        )
 
     @server.tool()
     def speaker_memory_remember_name(speaker_ref: str, name: str) -> dict[str, Any]:
-        return service.remember_name(
-            speaker_ref,
-            name,
-            conversation_id=conversation_id_provider(),
-        ).model_dump(mode="json", exclude_none=True)
+        return _tool_call(
+            lambda: service.remember_name(
+                speaker_ref,
+                name,
+                conversation_id=conversation_id_provider(),
+            ).model_dump(mode="json", exclude_none=True)
+        )
 
     @server.tool()
     def speaker_memory_confirm(speaker_ref: str, person_id: str) -> dict[str, Any]:
-        return service.confirm(
-            speaker_ref,
-            person_id,
-            conversation_id=conversation_id_provider(),
-        ).model_dump(mode="json", exclude_none=True)
+        return _tool_call(
+            lambda: service.confirm(
+                speaker_ref,
+                person_id,
+                conversation_id=conversation_id_provider(),
+            ).model_dump(mode="json", exclude_none=True)
+        )
 
     @server.tool()
     def speaker_memory_reject(speaker_ref: str, person_id: str) -> dict[str, Any]:
-        return service.reject(
-            speaker_ref,
-            person_id,
-            conversation_id=conversation_id_provider(),
-        ).model_dump(mode="json", exclude_none=True)
+        return _tool_call(
+            lambda: service.reject(
+                speaker_ref,
+                person_id,
+                conversation_id=conversation_id_provider(),
+            ).model_dump(mode="json", exclude_none=True)
+        )
 
     @server.tool()
     def speaker_memory_remember_fact(
@@ -65,22 +84,32 @@ def build_mcp_server(
         fact: str,
         topic: str | None = None,
     ) -> dict[str, Any]:
-        return service.remember_fact(
-            speaker_ref,
-            fact,
-            topic=topic,
-            conversation_id=conversation_id_provider(),
-        ).model_dump(mode="json")
+        return _tool_call(
+            lambda: service.remember_fact(
+                speaker_ref,
+                fact,
+                topic=topic,
+                conversation_id=conversation_id_provider(),
+            ).model_dump(mode="json")
+        )
 
     @server.tool()
-    def speaker_memory_recall(speaker_ref: str, query: str, limit: int = 5) -> list[dict[str, Any]]:
-        facts = service.recall(
-            speaker_ref,
-            query=query,
-            limit=limit,
-            conversation_id=conversation_id_provider(),
+    def speaker_memory_recall(
+        speaker_ref: str,
+        query: str,
+        limit: int = 5,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        return _tool_call(
+            lambda: [
+                fact.model_dump(mode="json")
+                for fact in service.recall(
+                    speaker_ref,
+                    query=query,
+                    limit=limit,
+                    conversation_id=conversation_id_provider(),
+                )
+            ]
         )
-        return [fact.model_dump(mode="json") for fact in facts]
 
     @server.tool()
     def speaker_memory_forget(
@@ -88,13 +117,16 @@ def build_mcp_server(
         scope: str,
         fact_id: str | None = None,
     ) -> dict[str, Any]:
-        deleted = service.forget(
-            speaker_ref,
-            scope=scope,
-            fact_id=fact_id,
-            conversation_id=conversation_id_provider(),
+        return _tool_call(
+            lambda: {
+                "deleted": service.forget(
+                    speaker_ref,
+                    scope=scope,
+                    fact_id=fact_id,
+                    conversation_id=conversation_id_provider(),
+                )
+            }
         )
-        return {"deleted": deleted}
 
     return server
 

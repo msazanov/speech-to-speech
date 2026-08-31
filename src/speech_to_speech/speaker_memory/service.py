@@ -10,12 +10,16 @@ class IdentityNotConfirmed(PermissionError):
     """Private memory is unavailable until identity evidence is decisive."""
 
 
+class InvalidPersonCandidate(PermissionError):
+    """A decision targeted a person not proposed for this speaker reference."""
+
+
 class SpeakerMemoryService:
     """Expose semantic decisions while keeping evidence weights server-owned."""
 
     _REMEMBER_WEIGHT = 3.0
     _CONFIRM_WEIGHT = 2.0
-    _REJECT_WEIGHT = -1.0
+    _REJECT_WEIGHT = -3.0
     _MAX_NAME_LENGTH = 80
     _MAX_FACT_LENGTH = 500
     _MAX_TOPIC_LENGTH = 80
@@ -47,14 +51,27 @@ class SpeakerMemoryService:
         if not normalized_name or len(normalized_name) > self._MAX_NAME_LENGTH:
             raise ValueError(f"name must contain 1 to {self._MAX_NAME_LENGTH} characters")
         reference = self.store.resolve_reference(speaker_ref, conversation_id=conversation_id)
-        person = self.store.create_person(normalized_name)
+        person = next(
+            (
+                candidate
+                for candidate in self.store.resolve_person_candidates(reference.voice_id)
+                if candidate.name.casefold() == normalized_name.casefold()
+            ),
+            None,
+        )
+        if person is None:
+            created = self.store.create_person(normalized_name, reuse=False)
+            person_id = created.id
+        else:
+            person_id = person.person_id
         self.store.add_identity_evidence(
             reference.voice_id,
-            person.id,
+            person_id,
             kind="self_introduction",
             weight=self._REMEMBER_WEIGHT,
             observation_id=reference.observation_id,
         )
+        self.store.bind_reference_candidate(speaker_ref, person_id)
         return self.inspect(speaker_ref, conversation_id=conversation_id)
 
     def confirm(self, speaker_ref: str, person_id: str, *, conversation_id: str) -> SpeakerAttribution:
@@ -140,6 +157,8 @@ class SpeakerMemoryService:
         weight: float,
     ) -> SpeakerAttribution:
         reference = self.store.resolve_reference(speaker_ref, conversation_id=conversation_id)
+        if not self.store.reference_allows_candidate(speaker_ref, person_id):
+            raise InvalidPersonCandidate("person was not proposed for this speaker reference")
         self.store.add_identity_evidence(
             reference.voice_id,
             person_id,

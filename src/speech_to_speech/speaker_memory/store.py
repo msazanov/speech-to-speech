@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -41,7 +42,9 @@ def normalize_embedding(embedding: np.ndarray) -> np.ndarray:
 class SpeakerMemoryStore:
     """Small synchronous store intended for one in-process pipeline."""
 
-    _SCHEMA_VERSION = 2
+    _SCHEMA_VERSION = 3
+    _MAX_CENTROID_WEIGHT = 20.0
+    _MAX_EVIDENCE_SCORE = 10.0
 
     def __init__(
         self,
@@ -49,10 +52,14 @@ class SpeakerMemoryStore:
         *,
         clock: Callable[[], float] = time.time,
         timeout_s: float = 2.0,
+        observation_retention_days: int = 30,
     ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.clock = clock
+        if observation_retention_days < 1:
+            raise ValueError("observation retention must be at least one day")
+        self.observation_retention_days = observation_retention_days
         self._lock = threading.RLock()
         self._connection = sqlite3.connect(
             self.path,
@@ -67,6 +74,7 @@ class SpeakerMemoryStore:
             self._connection.execute(f"PRAGMA busy_timeout={int(timeout_s * 1000)}")
             self._migrate()
             self._fts_enabled = self._initialize_fact_search()
+        self.prune_expired()
 
     def _migrate(self) -> None:
         self._connection.executescript(
@@ -102,11 +110,21 @@ class SpeakerMemoryStore:
             );
             CREATE INDEX IF NOT EXISTS speaker_observations_voice_idx
                 ON speaker_observations(voice_id, created_at);
+            CREATE INDEX IF NOT EXISTS speaker_observations_created_idx
+                ON speaker_observations(created_at);
             CREATE TABLE IF NOT EXISTS speaker_references (
                 ref TEXT PRIMARY KEY,
                 observation_id TEXT NOT NULL REFERENCES speaker_observations(id),
                 conversation_id TEXT NOT NULL,
                 expires_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS speaker_references_expiry_idx
+                ON speaker_references(expires_at);
+            CREATE TABLE IF NOT EXISTS speaker_reference_candidates (
+                ref TEXT NOT NULL REFERENCES speaker_references(ref) ON DELETE CASCADE,
+                person_id TEXT NOT NULL REFERENCES persons(id),
+                created_at REAL NOT NULL,
+                PRIMARY KEY (ref, person_id)
             );
             CREATE TABLE IF NOT EXISTS voice_person_evidence (
                 id TEXT PRIMARY KEY,
@@ -119,6 +137,17 @@ class SpeakerMemoryStore:
             );
             CREATE INDEX IF NOT EXISTS voice_person_evidence_lookup_idx
                 ON voice_person_evidence(voice_id, person_id, created_at);
+            DELETE FROM voice_person_evidence
+                WHERE observation_id IS NOT NULL
+                  AND rowid NOT IN (
+                      SELECT MIN(rowid)
+                      FROM voice_person_evidence
+                      WHERE observation_id IS NOT NULL
+                      GROUP BY observation_id, person_id, kind
+                  );
+            CREATE UNIQUE INDEX IF NOT EXISTS voice_person_evidence_semantic_once_idx
+                ON voice_person_evidence(observation_id, person_id, kind)
+                WHERE observation_id IS NOT NULL;
             CREATE TABLE IF NOT EXISTS personal_facts (
                 id TEXT PRIMARY KEY,
                 person_id TEXT NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
@@ -135,7 +164,7 @@ class SpeakerMemoryStore:
         row = self._connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
         if row is None:
             self._connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (self._SCHEMA_VERSION,))
-        elif row["version"] == 1:
+        elif row["version"] in {1, 2}:
             self._connection.execute("UPDATE schema_meta SET version = ?", (self._SCHEMA_VERSION,))
         elif row["version"] != self._SCHEMA_VERSION:
             raise RuntimeError(f"unsupported speaker-memory schema version: {row['version']}")
@@ -154,6 +183,20 @@ class SpeakerMemoryStore:
         except sqlite3.OperationalError:
             return False
         return True
+
+    @contextmanager
+    def _transaction(self):
+        """Serialize writes across SQLite connections with a bounded immediate lock."""
+
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                self._connection.rollback()
+                raise
+            else:
+                self._connection.commit()
 
     @staticmethod
     def _id(prefix: str) -> str:
@@ -177,7 +220,7 @@ class SpeakerMemoryStore:
             raise ValueError("quality must be finite and non-negative")
         cluster_id = self._id("v")
         now = self.clock()
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 """INSERT INTO voice_clusters
                    (id, centroid, dimension, sample_count, quality_weight, created_at, last_seen)
@@ -211,7 +254,7 @@ class SpeakerMemoryStore:
         vector = normalize_embedding(embedding)
         if not np.isfinite(quality) or quality <= 0:
             raise ValueError("quality must be finite and positive")
-        with self._lock, self._connection:
+        with self._transaction():
             row = self._connection.execute("SELECT * FROM voice_clusters WHERE id = ?", (voice_id,)).fetchone()
             if row is None:
                 raise KeyError(voice_id)
@@ -219,9 +262,11 @@ class SpeakerMemoryStore:
             if current.centroid.size != vector.size:
                 raise InvalidEmbedding("speaker embedding dimension does not match the stored cluster")
             bounded_weight = min(float(quality), 1.0)
-            total_weight = current.quality_weight + bounded_weight
+            retained_weight = min(current.quality_weight, self._MAX_CENTROID_WEIGHT)
+            combined_weight = retained_weight + bounded_weight
+            total_weight = min(combined_weight, self._MAX_CENTROID_WEIGHT)
             centroid = normalize_embedding(
-                current.centroid * current.quality_weight + vector * bounded_weight
+                current.centroid * retained_weight + vector * bounded_weight
             )
             now = self.clock()
             self._connection.execute(
@@ -256,7 +301,7 @@ class SpeakerMemoryStore:
     ) -> SpeakerObservation:
         observation_id = self._id("o")
         now = self.clock()
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 """INSERT INTO speaker_observations
                    (id, voice_id, turn_id, turn_revision, conversation_id, quality, created_at)
@@ -278,7 +323,7 @@ class SpeakerMemoryStore:
             raise ValueError("reference TTL must be positive")
         reference = self._id("sr")
         expires_at = self.clock() + ttl_s
-        with self._lock, self._connection:
+        with self._transaction():
             row = self._connection.execute(
                 "SELECT conversation_id FROM speaker_observations WHERE id = ?", (observation_id,)
             ).fetchone()
@@ -305,7 +350,7 @@ class SpeakerMemoryStore:
             raise UnknownSpeakerReference("speaker reference does not exist")
         if row["conversation_id"] != conversation_id:
             raise SpeakerReferenceConversationMismatch("speaker reference belongs to another conversation")
-        if self.clock() > row["expires_at"]:
+        if self.clock() >= row["expires_at"]:
             raise ExpiredSpeakerReference("speaker reference has expired")
         return SpeakerReference(
             value=row["ref"],
@@ -315,23 +360,32 @@ class SpeakerMemoryStore:
             expires_at=row["expires_at"],
         )
 
-    def create_person(self, name: str) -> Person:
+    def create_person(self, name: str, *, reuse: bool = True) -> Person:
         display_name = " ".join(name.split())
         if not display_name:
             raise ValueError("person name must not be empty")
         normalized_name = display_name.casefold()
         now = self.clock()
         person_id = self._id("p")
-        with self._lock, self._connection:
-            self._connection.execute(
-                """INSERT INTO persons(id, display_name, normalized_name, created_at, last_seen)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(normalized_name) DO UPDATE SET last_seen = excluded.last_seen""",
-                (person_id, display_name, normalized_name, now, now),
-            )
-            row = self._connection.execute(
-                "SELECT * FROM persons WHERE normalized_name = ?", (normalized_name,)
-            ).fetchone()
+        storage_name = normalized_name if reuse else f"{normalized_name}\x1f{person_id}"
+        with self._transaction():
+            if reuse:
+                self._connection.execute(
+                    """INSERT INTO persons(id, display_name, normalized_name, created_at, last_seen)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT(normalized_name) DO UPDATE SET last_seen = excluded.last_seen""",
+                    (person_id, display_name, storage_name, now, now),
+                )
+                row = self._connection.execute(
+                    "SELECT * FROM persons WHERE normalized_name = ?", (storage_name,)
+                ).fetchone()
+            else:
+                self._connection.execute(
+                    """INSERT INTO persons(id, display_name, normalized_name, created_at, last_seen)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (person_id, display_name, storage_name, now, now),
+                )
+                row = self._connection.execute("SELECT * FROM persons WHERE id = ?", (person_id,)).fetchone()
         assert row is not None
         return Person(
             id=row["id"],
@@ -353,11 +407,13 @@ class SpeakerMemoryStore:
             raise ValueError("evidence kind must not be empty")
         if not np.isfinite(weight):
             raise ValueError("evidence weight must be finite")
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 """INSERT INTO voice_person_evidence
                    (id, voice_id, person_id, kind, weight, observation_id, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(observation_id, person_id, kind)
+                   WHERE observation_id IS NOT NULL DO NOTHING""",
                 (self._id("e"), voice_id, person_id, kind, float(weight), observation_id, self.clock()),
             )
 
@@ -365,13 +421,13 @@ class SpeakerMemoryStore:
         with self._lock:
             rows = self._connection.execute(
                 """SELECT p.id AS person_id, p.display_name,
-                          SUM(e.weight) AS evidence_score
+                          MAX(?, MIN(?, SUM(e.weight))) AS evidence_score
                    FROM voice_person_evidence AS e
                    JOIN persons AS p ON p.id = e.person_id
                    WHERE e.voice_id = ?
                    GROUP BY p.id, p.display_name
                    ORDER BY evidence_score DESC, p.id""",
-                (voice_id,),
+                (-self._MAX_EVIDENCE_SCORE, self._MAX_EVIDENCE_SCORE, voice_id),
             ).fetchall()
         return [
             PersonCandidate(
@@ -396,7 +452,7 @@ class SpeakerMemoryStore:
     def add_personal_fact(self, person_id: str, fact: str, *, topic: str | None = None) -> PersonalFact:
         fact_id = self._id("f")
         now = self.clock()
-        with self._lock, self._connection:
+        with self._transaction():
             self._connection.execute(
                 """INSERT INTO personal_facts(id, person_id, topic, fact, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?)""",
@@ -449,7 +505,7 @@ class SpeakerMemoryStore:
         return [self._fact_from_row(row) for row in rows]
 
     def delete_personal_facts(self, person_id: str, *, fact_id: str | None = None) -> int:
-        with self._lock, self._connection:
+        with self._transaction():
             if fact_id is None:
                 rows = self._connection.execute(
                     "SELECT id FROM personal_facts WHERE person_id = ?", (person_id,)
@@ -472,6 +528,56 @@ class SpeakerMemoryStore:
                 ids,
             )
         return len(ids)
+
+    def bind_reference_candidate(self, reference: str, person_id: str) -> None:
+        with self._transaction():
+            self._connection.execute(
+                """INSERT INTO speaker_reference_candidates(ref, person_id, created_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(ref, person_id) DO NOTHING""",
+                (reference, person_id, self.clock()),
+            )
+
+    def reference_allows_candidate(self, reference: str, person_id: str) -> bool:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT 1 FROM speaker_reference_candidates WHERE ref = ? AND person_id = ?",
+                (reference, person_id),
+            ).fetchone()
+        return row is not None
+
+    def prune_expired(self) -> dict[str, int]:
+        now = self.clock()
+        cutoff = now - self.observation_retention_days * 86400
+        with self._transaction():
+            references = self._connection.execute(
+                "DELETE FROM speaker_references WHERE expires_at <= ?",
+                (now,),
+            ).rowcount
+            self._connection.execute(
+                """UPDATE voice_person_evidence
+                   SET observation_id = NULL
+                   WHERE observation_id IN (
+                       SELECT o.id
+                       FROM speaker_observations AS o
+                       WHERE o.created_at < ?
+                         AND NOT EXISTS (
+                             SELECT 1 FROM speaker_references AS r
+                             WHERE r.observation_id = o.id
+                         )
+                   )""",
+                (cutoff,),
+            )
+            observations = self._connection.execute(
+                """DELETE FROM speaker_observations
+                   WHERE created_at < ?
+                     AND NOT EXISTS (
+                         SELECT 1 FROM speaker_references AS r
+                         WHERE r.observation_id = speaker_observations.id
+                     )""",
+                (cutoff,),
+            ).rowcount
+        return {"references": max(references, 0), "observations": max(observations, 0)}
 
     def close(self) -> None:
         with self._lock:

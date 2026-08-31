@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Callable
 from typing import Any
 
 from .models import SpeakerReferenceError
-from .service import IdentityNotConfirmed, SpeakerMemoryService
+from .service import IdentityNotConfirmed, InvalidPersonCandidate, SpeakerMemoryService
 
 CREATE_RESPONSE = True
 
@@ -143,6 +144,22 @@ def create_tool_executor(
     return executor
 
 
+def tool_error_output(exc: Exception) -> dict[str, Any] | None:
+    """Map domain and transient storage errors consistently across tool transports."""
+
+    if isinstance(exc, IdentityNotConfirmed):
+        return {"ok": False, "error": "identity_not_confirmed", "recommendation": "clarify"}
+    if isinstance(exc, InvalidPersonCandidate):
+        return {"ok": False, "error": "person_candidate_invalid", "recommendation": "clarify"}
+    if isinstance(exc, SpeakerReferenceError):
+        return {"ok": False, "error": "speaker_reference_invalid", "recommendation": "clarify"}
+    if isinstance(exc, sqlite3.OperationalError):
+        message = str(exc).casefold()
+        if "locked" in message or "busy" in message:
+            return {"ok": False, "error": "speaker_memory_busy", "retryable": True}
+    return None
+
+
 async def execute_tool(name: str, arguments: dict[str, Any]) -> Any:
     if _service is None or _conversation_id_provider is None:
         raise RuntimeError("speaker memory tool service is not configured")
@@ -217,14 +234,12 @@ def _execute(
             return ToolResult(output={"ok": True, "deleted": deleted}, create_response=False)
         else:
             raise ValueError(f"unknown speaker memory tool: {name}")
-    except IdentityNotConfirmed:
+    except Exception as exc:
+        output = tool_error_output(exc)
+        if output is None:
+            raise
         return ToolResult(
-            output={"ok": False, "error": "identity_not_confirmed", "recommendation": "clarify"},
-            create_response=True,
-        )
-    except SpeakerReferenceError:
-        return ToolResult(
-            output={"ok": False, "error": "speaker_reference_invalid", "recommendation": "clarify"},
+            output=output,
             create_response=True,
         )
     return ToolResult(

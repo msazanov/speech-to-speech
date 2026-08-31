@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 import numpy as np
 import pytest
 
@@ -62,7 +64,39 @@ async def test_remember_and_reject_use_fixed_evidence_without_automatic_followup
     assert isinstance(remembered, ToolResult)
     assert remembered.create_response is False
     assert rejected.create_response is False
-    assert store.resolve_person_candidates(attributed.voice_id)[0].evidence_score == pytest.approx(2.0)
+    assert store.resolve_person_candidates(attributed.voice_id)[0].evidence_score == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_confirm_rejects_person_not_proposed_for_reference(tool_runtime) -> None:
+    _store, attributed = tool_runtime
+
+    result = await execute_tool(
+        "speaker_memory_confirm",
+        {"speaker_ref": attributed.speaker_ref, "person_id": "p_hallucinated"},
+    )
+
+    assert result.create_response is True
+    assert result.output == {
+        "ok": False,
+        "error": "person_candidate_invalid",
+        "recommendation": "clarify",
+    }
+
+
+@pytest.mark.asyncio
+async def test_database_lock_returns_bounded_retryable_tool_result(tool_runtime, monkeypatch) -> None:
+    store, attributed = tool_runtime
+    service = SpeakerMemoryService(store)
+    monkeypatch.setattr(service, "inspect", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        sqlite3.OperationalError("database is locked")
+    ))
+    configure_tool_service(service, conversation_id_provider=lambda: "conv_1")
+
+    result = await execute_tool("speaker_memory_inspect", {"speaker_ref": attributed.speaker_ref})
+
+    assert result.create_response is True
+    assert result.output == {"ok": False, "error": "speaker_memory_busy", "retryable": True}
 
 
 @pytest.mark.asyncio

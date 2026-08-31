@@ -132,7 +132,19 @@ def test_service_uses_fixed_semantic_evidence_weights(store: SpeakerMemoryStore)
 
     candidates = store.resolve_person_candidates(first.voice_id)
     assert candidates[0].name == "Аркадий"
-    assert candidates[0].evidence_score == pytest.approx(4.0)
+    assert candidates[0].evidence_score == pytest.approx(2.0)
+
+
+def test_replayed_confirmation_is_idempotent_for_same_observation(store: SpeakerMemoryStore) -> None:
+    first = observe(tracker(store), unit([1.0, 0.0]))
+    service = SpeakerMemoryService(store)
+    remembered = service.remember_name(first.speaker_ref, "Аркадий", conversation_id="conv_1")
+    assert remembered.candidate is not None
+
+    service.confirm(first.speaker_ref, remembered.candidate.person_id, conversation_id="conv_1")
+    service.confirm(first.speaker_ref, remembered.candidate.person_id, conversation_id="conv_1")
+
+    assert store.resolve_person_candidates(first.voice_id)[0].evidence_score == pytest.approx(5.0)
 
 
 def test_inspection_cannot_use_reference_from_another_conversation(store: SpeakerMemoryStore) -> None:

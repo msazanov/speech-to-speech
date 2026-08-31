@@ -57,12 +57,17 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
             yield vad_audio
             return
 
+        quality = self._quality(audio)
+        if quality < getattr(self.tracker, "minimum_quality", 0.5):
+            yield vad_audio
+            return
+
         try:
             started = perf_counter()
             embedding = self.extractor.extract(audio, self.sample_rate)
             attribution = self.tracker.observe(
                 embedding,
-                quality=self._quality(audio),
+                quality=quality,
                 turn_id=vad_audio.turn_id or f"turn_{uuid4().hex}",
                 turn_revision=vad_audio.turn_revision or 0,
                 conversation_id=self.conversation_id,
@@ -87,6 +92,9 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
         return max(0.0, signal_score * (1.0 - clipping_fraction))
 
     def on_session_end(self) -> None:
+        store = getattr(self.tracker, "store", None)
+        if store is not None:
+            store.prune_expired()
         self.conversation_id = self._new_conversation_id()
 
     def cleanup(self) -> None:

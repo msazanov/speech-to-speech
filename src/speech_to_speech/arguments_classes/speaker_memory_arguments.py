@@ -41,5 +41,5 @@ class SpeakerMemoryArguments:
     )
     speaker_memory_observation_retention_days: int = field(
         default=30,
-        metadata={"help": "Retention target for speaker observations. Cleanup is explicit."},
+        metadata={"help": "Retention target for speaker observations pruned at startup and session end."},
     )

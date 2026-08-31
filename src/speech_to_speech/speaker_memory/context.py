@@ -29,6 +29,7 @@ def format_speaker_context(attribution: SpeakerAttribution) -> str:
         "recommendation": attribution.recommendation,
     }
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    encoded = encoded.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
     return f"{_CONTEXT_OPEN}{encoded}{_CONTEXT_CLOSE}"
 
 

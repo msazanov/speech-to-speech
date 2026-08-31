@@ -100,6 +100,9 @@ class SpeakerTracker:
             state, candidate = self._identity_state(voice.id)
             recommendation = "clarify" if state is SpeakerState.CONFLICT else "none"
 
+        if candidate is not None:
+            self.store.bind_reference_candidate(reference, candidate.person_id)
+
         return SpeakerAttribution(
             voice_id=voice.id,
             speaker_ref=reference,

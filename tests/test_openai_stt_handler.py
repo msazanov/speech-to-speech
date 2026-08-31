@@ -21,6 +21,7 @@ from speech_to_speech.pipeline.messages import (
     VADAudio,
 )
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+from speech_to_speech.speaker_memory.models import SpeakerAttribution, SpeakerState
 from speech_to_speech.STT import openai_compatible_handler as stt_module
 from speech_to_speech.STT.openai_compatible_handler import (
     PIPELINE_SAMPLE_RATE,
@@ -287,6 +288,17 @@ def test_openai_stt_returns_final_transcription(monkeypatch):
     assert outputs[0].language_code == "en"
     assert _FakeOperation.instances[-1].kwargs["endpoint_url"].endswith("/v1/audio/transcriptions")
     assert _FakeOperation.instances[-1].kwargs["wav_bytes"].startswith(b"RIFF")
+
+
+def test_openai_stt_final_preserves_speaker_attribution(monkeypatch):
+    handler = _handler(monkeypatch)
+    _FakeOperation.results = [HttpTranscriptionResult(text="привет", language="ru")]
+    speaker = SpeakerAttribution(voice_id="v_1", speaker_ref="sr_1", state=SpeakerState.UNKNOWN)
+    vad_audio = _audio().model_copy(update={"speaker": speaker})
+
+    output = list(handler.process(vad_audio))[0]
+
+    assert output.speaker == speaker
 
 
 def test_remote_progressive_hypotheses_remain_cumulative(monkeypatch):

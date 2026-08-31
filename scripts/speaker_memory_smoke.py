@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -67,8 +69,31 @@ def percentile_95(values: list[float]) -> float:
     return ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]
 
 
+def validate_samples(samples: list[tuple[str, Path]]) -> None:
+    counts = Counter(label for label, _path in samples)
+    if len(counts) < 2:
+        raise ValueError("speaker smoke requires at least two distinct people")
+    insufficient = sorted(label for label, count in counts.items() if count < 2)
+    if insufficient:
+        raise ValueError(f"speaker smoke requires at least two recordings for: {', '.join(insufficient)}")
+    hashes_by_label: dict[str, set[bytes]] = {}
+    for label, path in samples:
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").digest()
+        hashes_by_label.setdefault(label, set()).add(digest)
+    duplicates = sorted(label for label, hashes in hashes_by_label.items() if len(hashes) < 2)
+    if duplicates:
+        raise ValueError(f"speaker smoke requires two distinct recordings for: {', '.join(duplicates)}")
+
+
 def run_smoke(arguments: argparse.Namespace, database_path: Path) -> dict[str, object]:
+    samples = [parse_sample(raw_sample) for raw_sample in arguments.sample]
+    validate_samples(samples)
+
+    import numpy as np
+
     from speech_to_speech.speaker_memory.extractor import SherpaOnnxSpeakerEmbeddingExtractor
+    from speech_to_speech.speaker_memory.models import SpeakerState
     from speech_to_speech.speaker_memory.service import SpeakerMemoryService
     from speech_to_speech.speaker_memory.store import SpeakerMemoryStore
     from speech_to_speech.speaker_memory.tracker import SpeakerTracker
@@ -83,14 +108,16 @@ def run_smoke(arguments: argparse.Namespace, database_path: Path) -> dict[str, o
     )
     service = SpeakerMemoryService(store)
     expected_voice_by_label: dict[str, str] = {}
+    representative_embedding_by_label: dict[str, np.ndarray] = {}
+    last_reference_by_label: dict[str, str] = {}
     rows: list[dict[str, object]] = []
     latencies: list[float] = []
     try:
-        for index, raw_sample in enumerate(arguments.sample, start=1):
-            label, path = parse_sample(raw_sample)
+        for index, (label, path) in enumerate(samples, start=1):
             audio = load_mono_16k(path)
             started = time.perf_counter()
             embedding = extractor.extract(audio, 16_000)
+            representative_embedding_by_label.setdefault(label, embedding)
             attribution = tracker.observe(
                 embedding,
                 quality=1.0,
@@ -105,6 +132,7 @@ def run_smoke(arguments: argparse.Namespace, database_path: Path) -> dict[str, o
                 expected_voice_by_label[label] = attribution.voice_id
                 service.remember_name(attribution.speaker_ref, label, conversation_id="smoke")
                 expected_voice = attribution.voice_id
+            last_reference_by_label[label] = attribution.speaker_ref
             other_voices = {voice for known_label, voice in expected_voice_by_label.items() if known_label != label}
             correct = attribution.voice_id == expected_voice and attribution.voice_id not in other_voices
             inspected = service.inspect(attribution.speaker_ref, conversation_id="smoke")
@@ -120,12 +148,72 @@ def run_smoke(arguments: argparse.Namespace, database_path: Path) -> dict[str, o
                     "decision_correct": correct,
                 }
             )
+
+        probe_label = next(iter(expected_voice_by_label))
+        probe_voice = expected_voice_by_label[probe_label]
+        probe_reference = last_reference_by_label[probe_label]
+        before_confirmation = store.resolve_person_candidates(probe_voice)[0]
+        service.confirm(probe_reference, before_confirmation.person_id, conversation_id="smoke")
+        after_confirmation = store.resolve_person_candidates(probe_voice)[0]
+        service.reject(probe_reference, before_confirmation.person_id, conversation_id="smoke")
+        after_rejection = store.resolve_person_candidates(probe_voice)[0]
+        semantic_probe = {
+            "person_id": before_confirmation.person_id,
+            "before": before_confirmation.evidence_score,
+            "after_confirmation": after_confirmation.evidence_score,
+            "after_rejection": after_rejection.evidence_score,
+            "confirmation_increased": after_confirmation.evidence_score > before_confirmation.evidence_score,
+            "rejection_decreased": after_rejection.evidence_score < after_confirmation.evidence_score,
+        }
+
+        first_label, second_label = list(expected_voice_by_label)[:2]
+        first_embedding = np.asarray(representative_embedding_by_label[first_label], dtype=np.float32)
+        second_embedding = np.asarray(representative_embedding_by_label[second_label], dtype=np.float32)
+        mixed_embedding = first_embedding + second_embedding
+        centroids_before = {cluster.id: cluster.centroid.copy() for cluster in store.get_voice_clusters()}
+        mixed_norm = float(np.linalg.norm(mixed_embedding))
+        if mixed_norm <= 1e-6:
+            ambiguity_probe = {
+                "state": "invalid_probe",
+                "centroids_unchanged": True,
+                "passed": False,
+            }
+        else:
+            mixed_embedding /= mixed_norm
+            mixed = tracker.observe(
+                mixed_embedding,
+                quality=1.0,
+                turn_id="smoke_ambiguous_probe",
+                turn_revision=0,
+                conversation_id="smoke",
+            )
+            centroids_after = {cluster.id: cluster.centroid.copy() for cluster in store.get_voice_clusters()}
+            unchanged = centroids_before.keys() == centroids_after.keys() and all(
+                np.array_equal(centroid, centroids_after[voice_id])
+                for voice_id, centroid in centroids_before.items()
+            )
+            ambiguity_probe = {
+                "state": mixed.state.value,
+                "centroids_unchanged": unchanged,
+                "passed": mixed.state is SpeakerState.AMBIGUOUS and unchanged,
+            }
     finally:
         store.close()
+    warm_p95 = percentile_95(latencies[1:]) if len(latencies) > 1 else float("inf")
+    decisions_correct = all(bool(row["decision_correct"]) for row in rows)
+    semantic_passed = bool(
+        semantic_probe["confirmation_increased"] and semantic_probe["rejection_decreased"]
+    )
     return {
-        "ok": all(bool(row["decision_correct"]) for row in rows),
+        "ok": decisions_correct and semantic_passed and ambiguity_probe["passed"] and warm_p95 <= 100.0,
         "samples": rows,
-        "warm_speaker_ms_p95": round(percentile_95(latencies[1:]), 3) if len(latencies) > 1 else None,
+        "minimum_samples_passed": True,
+        "same_different_passed": decisions_correct,
+        "semantic_probe": semantic_probe,
+        "ambiguity_probe": ambiguity_probe,
+        "warm_speaker_ms_p95": round(warm_p95, 3),
+        "warm_speaker_ms_budget": 100.0,
+        "latency_passed": warm_p95 <= 100.0,
         "thresholds": {
             "match": arguments.match_threshold,
             "candidate": arguments.candidate_threshold,

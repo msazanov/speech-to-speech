@@ -375,7 +375,10 @@ def _build_speaker_memory_handler(
     from speech_to_speech.speaker_memory.tracker import SpeakerTracker
 
     database_path = arguments.speaker_memory_database_path or _default_speaker_memory_database_path()
-    store = SpeakerMemoryStore(database_path)
+    store = SpeakerMemoryStore(
+        database_path,
+        observation_retention_days=arguments.speaker_memory_observation_retention_days,
+    )
     try:
         extractor = SherpaOnnxSpeakerEmbeddingExtractor(
             arguments.speaker_memory_model_path,

@@ -24,7 +24,7 @@ avoid a new always-on service in the realtime critical path.
 VAD -> SpeakerMemoryHandler -> STT -> TranscriptionNotifier -> RealtimeService -> LLM -> TTS
 ```
 
-The stage is disabled by default upstream and enabled in the local Russian-first
+The stage is disabled by default upstream and remains gated in the local Russian-first
 profile. Progressive VAD revisions pass through unchanged. Only final segments
 that meet duration and signal-quality gates produce an embedding.
 

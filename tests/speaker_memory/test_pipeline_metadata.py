@@ -123,6 +123,7 @@ def test_builder_inserts_cpu_speaker_handler_only_when_enabled(monkeypatch, tmp_
             speaker_memory_model_path=str(tmp_path / "campplus.onnx"),
             speaker_memory_database_path=str(tmp_path / "memory.sqlite3"),
             speaker_memory_threads=1,
+            speaker_memory_observation_retention_days=7,
         ),
         sample_rate=16000,
     )
@@ -131,4 +132,5 @@ def test_builder_inserts_cpu_speaker_handler_only_when_enabled(monkeypatch, tmp_
     assert enabled is not None
     assert enabled.queue_in is queue_in
     assert enabled.queue_out is queue_out
+    assert enabled.service.store.observation_retention_days == 7
     assert captured == {"model_path": str(tmp_path / "campplus.onnx"), "num_threads": 1}
