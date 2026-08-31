@@ -142,6 +142,16 @@ LB_USER_AGENT = "speech-to-speech-demo"
 app = FastAPI(title="s2s-demo")
 
 
+@app.middleware("http")
+async def disable_stale_frontend_cache(request: Request, call_next):
+    """Always revalidate local UI code so a deployed speaker label cannot stay stale."""
+
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.endswith((".html", ".js", ".css")):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.get("/vendor/openai-realtime-agents.umd.js", include_in_schema=False)
 def agents_sdk_bundle():
     """Serve the exact npm-pinned browser bundle without committing build output."""

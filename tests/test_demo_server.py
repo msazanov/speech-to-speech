@@ -9,11 +9,21 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from starlette.testclient import TestClient
 
 DEMO_DIR = Path(__file__).resolve().parents[1] / "demo"
 sys.path.insert(0, str(DEMO_DIR))
 demo_auth = importlib.import_module("auth")
 demo_server = importlib.import_module("server")
+
+
+def test_static_modules_disable_browser_cache_during_local_iteration():
+    with TestClient(demo_server.app) as client:
+        response = client.get("/ui/chat.js")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert 'role === "user" ? "Voice…"' in response.text
 
 
 def test_config_exposes_native_speaker_memory_tool_schemas(monkeypatch):
