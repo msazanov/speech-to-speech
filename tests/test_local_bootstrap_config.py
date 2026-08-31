@@ -178,6 +178,8 @@ def test_voice_stack_activation_manages_only_huggingvoice(tmp_path):
         "ARG=daemon-reload",
         "ARG=--user",
         "ARG=enable",
-        "ARG=--now",
+        "ARG=huggingvoice.service",
+        "ARG=--user",
+        "ARG=restart",
         "ARG=huggingvoice.service",
     ]

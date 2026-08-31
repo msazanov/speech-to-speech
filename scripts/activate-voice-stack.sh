@@ -8,4 +8,5 @@ huggingvoice_unit_source="${HUGGINGVOICE_UNIT_SOURCE:-/home/random/dev/huggingvo
 mkdir -p "$systemd_user_dir"
 ln -sfn "$huggingvoice_unit_source" "${systemd_user_dir}/huggingvoice.service"
 "$systemctl_bin" --user daemon-reload
-"$systemctl_bin" --user enable --now huggingvoice.service
+"$systemctl_bin" --user enable huggingvoice.service
+"$systemctl_bin" --user restart huggingvoice.service
