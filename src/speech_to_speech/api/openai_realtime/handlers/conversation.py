@@ -33,6 +33,7 @@ from speech_to_speech.pipeline.events import (
     TranscriptionFailedEvent,
 )
 from speech_to_speech.pipeline.transcript_logging import transcript_for_log
+from speech_to_speech.speaker_memory.context import public_speaker_metadata
 
 if TYPE_CHECKING:
     from speech_to_speech.api.openai_realtime.service import ServerEvent
@@ -354,19 +355,21 @@ class ConversationHandler(RealtimeBaseHandler):
                 return []
             item_id, duration_s = terminal
         st.response_usage.audio_duration_s += duration_s
-        return [
-            ConversationItemInputAudioTranscriptionCompletedEvent(
-                type="conversation.item.input_audio_transcription.completed",
-                event_id=self._next_event_id(),
-                content_index=0,
-                item_id=item_id,
-                transcript=event.transcript,
-                usage=UsageTranscriptTextUsageDuration(
-                    seconds=duration_s,
-                    type="duration",
-                ),
-            )
-        ]
+        completed = ConversationItemInputAudioTranscriptionCompletedEvent(
+            type="conversation.item.input_audio_transcription.completed",
+            event_id=self._next_event_id(),
+            content_index=0,
+            item_id=item_id,
+            transcript=event.transcript,
+            usage=UsageTranscriptTextUsageDuration(
+                seconds=duration_s,
+                type="duration",
+            ),
+        )
+        speaker = public_speaker_metadata(event.speaker)
+        if speaker is not None:
+            completed = completed.model_copy(update={"speaker": speaker})
+        return [completed]
 
     def on_transcription_failed(
         self,

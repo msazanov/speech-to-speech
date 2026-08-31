@@ -19,11 +19,25 @@ PERSON_RE = re.compile(r"\bperson=(?:'[^']*'|\"[^\"]*\"|[^\s]+)")
 
 STAGES = (
     (re.compile(r"\brejected\b|\berror\b|failed", re.IGNORECASE), "DROP", 196),
+    (re.compile(r"Speaker context injected", re.IGNORECASE), "CONTEXT", 111),
     (re.compile(r"Speaker attributed|blacklisted_voice", re.IGNORECASE), "VOICE", 75),
     (re.compile(r"GigaAM|transcription|\bSTT\b", re.IGNORECASE), "STT", 45),
     (re.compile(r"\bLLM\b|LanguageModel|ChatCompletions", re.IGNORECASE), "LLM", 177),
     (re.compile(r"\bTTS\b|Silero|first audio", re.IGNORECASE), "TTS", 214),
     (re.compile(r"Audio route|Acoustic echo|\bAEC\b", re.IGNORECASE), "AUDIO", 82),
+)
+
+COMPACT_KEEP = (
+    re.compile(r"Speaker attributed", re.IGNORECASE),
+    re.compile(r"Speaker context injected", re.IGNORECASE),
+    re.compile(r"Transcription completed", re.IGNORECASE),
+    re.compile(r"GigaAM ONNX transcription", re.IGNORECASE),
+    re.compile(r"LLM request", re.IGNORECASE),
+    re.compile(r"LLM response", re.IGNORECASE),
+    re.compile(r"^\s*(?:USER|ASSISTANT):", re.IGNORECASE),
+    re.compile(r"TTS completed", re.IGNORECASE),
+    re.compile(r"Response done", re.IGNORECASE),
+    re.compile(r"\brejected\b|\berror\b|failed", re.IGNORECASE),
 )
 
 
@@ -75,6 +89,15 @@ def humanize(line: str) -> str:
     return f"[{stage[0]}] {line}" if stage is not None else line
 
 
+def compact_line(line: str) -> str | None:
+    """Keep one operator-facing line per meaningful pipeline boundary."""
+
+    stripped = line.rstrip("\n")
+    if any(pattern.search(stripped) for pattern in COMPACT_KEEP):
+        return stripped
+    return None
+
+
 def colorize(line: str, *, color: bool) -> str:
     rendered = humanize(line.rstrip("\n"))
     if not color:
@@ -90,9 +113,11 @@ def colorize(line: str, *, color: bool) -> str:
     return f"{base}{rendered}{RESET}"
 
 
-def follow(lines: Iterable[str], *, color: bool) -> None:
+def follow(lines: Iterable[str], *, color: bool, verbose: bool = False) -> None:
     for line in lines:
-        print(colorize(line, color=color), flush=True)
+        rendered = line.rstrip("\n") if verbose else compact_line(line)
+        if rendered is not None:
+            print(colorize(rendered, color=color), flush=True)
 
 
 def main() -> int:
@@ -100,6 +125,7 @@ def main() -> int:
     parser.add_argument("--service", default="huggingvoice.service")
     parser.add_argument("--history", type=int, default=0, help="Show this many existing journal lines first.")
     parser.add_argument("--no-color", action="store_true")
+    parser.add_argument("--verbose", action="store_true", help="Show every journal line instead of compact turns.")
     args = parser.parse_args()
     command = [
         "journalctl",
@@ -116,7 +142,7 @@ def main() -> int:
     try:
         with subprocess.Popen(command, stdout=subprocess.PIPE, text=True, bufsize=1) as process:
             assert process.stdout is not None
-            follow(process.stdout, color=color)
+            follow(process.stdout, color=color, verbose=args.verbose)
             return process.wait()
     except KeyboardInterrupt:
         return 130

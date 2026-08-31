@@ -72,6 +72,7 @@ from speech_to_speech.pipeline.messages import (
     ResponsePrefetchTransaction,
 )
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+from speech_to_speech.speaker_memory.models import SpeakerAttribution, SpeakerState
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -3845,6 +3846,26 @@ class TestDispatchPipelineEvent:
         assert evt.usage.seconds == 3.2
         assert evt.usage.type == "duration"
         assert service._state(conn_id).response_pending is True
+
+    def test_transcription_completed_exposes_safe_speaker_identity_to_client(self, service, conn_id):
+        service.dispatch_pipeline_event(conn_id, SpeechStartedEvent())
+        service.dispatch_pipeline_event(conn_id, SpeechStoppedEvent(duration_s=1.0))
+
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(
+                transcript="Меня зовут Марат",
+                speaker=SpeakerAttribution(
+                    voice_id="v_browser",
+                    speaker_ref="sr_private_mutation_authority",
+                    state=SpeakerState.UNKNOWN,
+                ),
+            ),
+        )
+
+        payload = events[0].model_dump(mode="json", exclude_none=True)
+        assert payload["speaker"] == {"voice_id": "v_browser", "state": "unknown"}
+        assert "speaker_ref" not in json.dumps(payload)
 
     def test_audio_input_completed_marks_response_pending_and_preserves_duration(
         self,

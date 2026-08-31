@@ -455,9 +455,11 @@ export class S2sRealtimeClient extends EventTarget {
         const isCurrentUserItem = this._currentUserItemId
           ? Boolean(itemId) && itemId === this._currentUserItemId
           : true;
-        if (text || hadPartial) this.dispatchEvent(new CustomEvent("transcript", { detail: {
-          role: "user", text, partial: false, itemId,
-        } }));
+        if (text || hadPartial) {
+          const detail = { role: "user", text, partial: false, itemId };
+          if (event.speaker && typeof event.speaker === "object") detail.speaker = event.speaker;
+          this.dispatchEvent(new CustomEvent("transcript", { detail }));
+        }
         if (
           !text
           && isCurrentUserItem

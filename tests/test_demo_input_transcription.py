@@ -13,6 +13,24 @@ CLIENTS = [
 CASES = [
     pytest.param(
         """
+await deliver({
+  type: "conversation.item.input_audio_transcription.completed",
+  item_id: "item_speaker",
+  transcript: "Меня зовут Марат",
+  speaker: { voice_id: "v_browser", state: "unknown" },
+});
+assertEqual(transcripts, [{
+  role: "user",
+  text: "Меня зовут Марат",
+  partial: false,
+  itemId: "item_speaker",
+  speaker: { voice_id: "v_browser", state: "unknown" },
+}], "safe speaker metadata reaches the UI");
+""",
+        id="completed-carries-speaker-identity",
+    ),
+    pytest.param(
+        """
 await deliver({ type: "input_audio_buffer.speech_started", item_id: "item_1" });
 await deliver({ type: "conversation.item.input_audio_transcription.delta", item_id: "item_1", delta: "hel" });
 await deliver({ type: "conversation.item.input_audio_transcription.delta", item_id: "item_1", delta: "lo" });
