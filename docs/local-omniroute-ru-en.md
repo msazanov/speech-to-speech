@@ -156,6 +156,25 @@ activation gate: память голосов нельзя включать до 
 
 ## Проверка памяти голосов
 
+Интерактивный тест сначала произносит «Для теста ответов скажите ДА» и 30 секунд
+слушает реальный микрофон. При распознанном отдельном слове «да» он отвечает
+«Пизда, тест пройден». Если подтверждения нет, только после таймаута подаётся
+синтетическое «Да», затем CAMPPlus сравнивает по две реплики трёх разделимых
+голосов Silero (`xenia`, `baya`, `aidar`):
+
+```bash
+PYTHONPATH=src python scripts/synthetic_speaker_memory_smoke.py \
+  --input-device 20 \
+  --output-device 20 \
+  --timeout 30 \
+  --output-dir /tmp/huggingvoice-synthetic-speakers \
+  --json
+```
+
+JSON явно указывает `challenge.source=microphone` или
+`challenge.source=synthetic_timeout`, матрицу cosine similarity, назначенные
+`voice_id` и CPU-время атрибуции. WAV-файлы остаются в `--output-dir`.
+
 Подготовьте минимум по две отдельные русские записи каждого из двух людей и выполните:
 
 ```bash
