@@ -28,6 +28,7 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
         sample_rate: int = 16_000,
         min_audio_ms: int = 700,
         conversation_id: str | None = None,
+        close_store_on_cleanup: bool = False,
     ) -> None:
         if sample_rate <= 0:
             raise ValueError("speaker memory sample rate must be positive")
@@ -38,6 +39,7 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
         self.sample_rate = sample_rate
         self.min_audio_ms = min_audio_ms
         self.conversation_id = conversation_id or self._new_conversation_id()
+        self.close_store_on_cleanup = close_store_on_cleanup
 
     @staticmethod
     def _new_conversation_id() -> str:
@@ -83,3 +85,7 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
 
     def on_session_end(self) -> None:
         self.conversation_id = self._new_conversation_id()
+
+    def cleanup(self) -> None:
+        if self.close_store_on_cleanup:
+            self.tracker.store.close()

@@ -24,6 +24,7 @@ from speech_to_speech.arguments_classes.realtime_server_arguments import (
     LocalRealtimeServerArguments,
     RealtimeServerArguments,
 )
+from speech_to_speech.arguments_classes.speaker_memory_arguments import SpeakerMemoryArguments
 from speech_to_speech.arguments_classes.vad_arguments import VADHandlerArguments
 from speech_to_speech.backend_registry import (
     LLM_BACKENDS,
@@ -95,6 +96,7 @@ class ParsedArguments:
     realtime_server_kwargs: RealtimeServerArguments
     local_audio_kwargs: LocalAudioArguments
     vad_handler_kwargs: VADHandlerArguments
+    speaker_memory_kwargs: SpeakerMemoryArguments
     stt_backend: BackendSelection
     llm_backend: BackendSelection
     tts_backend: BackendSelection
@@ -229,6 +231,7 @@ def parse_arguments(
     argument_classes.extend(
         [
             VADHandlerArguments,
+            SpeakerMemoryArguments,
             *(spec.config_type for spec in selected_specs),
         ]
     )
@@ -264,6 +267,7 @@ def parse_arguments(
         realtime_server_kwargs=realtime_server_kwargs,
         local_audio_kwargs=by_type.get(LocalAudioArguments, LocalAudioArguments()),
         vad_handler_kwargs=by_type[VADHandlerArguments],
+        speaker_memory_kwargs=by_type[SpeakerMemoryArguments],
         stt_backend=BackendSelection(
             selected_specs[0], selected_specs[0].normalize(by_type[selected_specs[0].config_type])
         ),
@@ -343,6 +347,65 @@ def prepare_all_args(args: ParsedArguments) -> None:
         setattr(args, field_name, replace(selection, config=config))
 
 
+def _default_speaker_memory_database_path() -> Path:
+    data_home = os.environ.get("XDG_DATA_HOME")
+    root = Path(data_home).expanduser() if data_home else Path.home() / ".local" / "share"
+    return root / "huggingvoice" / "speaker-memory.sqlite3"
+
+
+def _build_speaker_memory_handler(
+    *,
+    stop_event: Event,
+    queue_in: Queue[VADOutItem],
+    queue_out: Queue[VADOutItem],
+    arguments: SpeakerMemoryArguments,
+    sample_rate: int,
+) -> Any | None:
+    """Construct the optional native stage without importing sherpa when disabled."""
+
+    if not arguments.speaker_memory_enabled:
+        return None
+    if not arguments.speaker_memory_model_path:
+        raise ValueError("speaker_memory_model_path is required when speaker memory is enabled")
+
+    from speech_to_speech.speaker_memory.extractor import SherpaOnnxSpeakerEmbeddingExtractor
+    from speech_to_speech.speaker_memory.handler import SpeakerMemoryHandler
+    from speech_to_speech.speaker_memory.store import SpeakerMemoryStore
+    from speech_to_speech.speaker_memory.tracker import SpeakerMemoryService, SpeakerTracker
+
+    database_path = arguments.speaker_memory_database_path or _default_speaker_memory_database_path()
+    store = SpeakerMemoryStore(database_path)
+    try:
+        extractor = SherpaOnnxSpeakerEmbeddingExtractor(
+            arguments.speaker_memory_model_path,
+            num_threads=arguments.speaker_memory_threads,
+        )
+        tracker = SpeakerTracker(
+            store,
+            match_threshold=arguments.speaker_memory_match_threshold,
+            candidate_threshold=arguments.speaker_memory_candidate_threshold,
+            ambiguity_margin=arguments.speaker_memory_ambiguity_margin,
+            reference_ttl_s=arguments.speaker_memory_reference_ttl_s,
+        )
+        handler = SpeakerMemoryHandler(
+            stop_event,
+            queue_in=queue_in,
+            queue_out=queue_out,
+            setup_kwargs={
+                "extractor": extractor,
+                "tracker": tracker,
+                "sample_rate": sample_rate,
+                "min_audio_ms": arguments.speaker_memory_min_audio_ms,
+                "close_store_on_cleanup": True,
+            },
+        )
+        handler.service = SpeakerMemoryService(store)
+        return handler
+    except Exception:
+        store.close()
+        raise
+
+
 def _build_handlers(
     *,
     stop_event: Event,
@@ -363,6 +426,7 @@ def _build_handlers(
     speculative_turns: SpeculativeTurnTracker,
     cancel_scope: CancelScope,
     pipeline_index: int,
+    speaker_memory_kwargs: SpeakerMemoryArguments | None = None,
 ) -> list[Any]:
     """Build a handler chain: VAD → STT/AudioInput → LM → TTS."""
     from speech_to_speech.LLM.lm_output_processor import LMOutputProcessor
@@ -382,11 +446,21 @@ def _build_handlers(
         },
     )
 
+    attributed_prompt_queue: Queue[VADOutItem] = Queue()
+    speaker_handler = _build_speaker_memory_handler(
+        stop_event=stop_event,
+        queue_in=spoken_prompt_queue,
+        queue_out=attributed_prompt_queue,
+        arguments=speaker_memory_kwargs or SpeakerMemoryArguments(),
+        sample_rate=vad_handler_kwargs.sample_rate,
+    )
+    stt_queue_in = attributed_prompt_queue if speaker_handler is not None else spoken_prompt_queue
+
     needs_notifier = not stt_backend.spec.capabilities.bypasses_transcription_notifier
     stt_queue_out: Queue[Any] = stt_output_queue if needs_notifier else text_prompt_queue
     stt_context = HandlerContext(
         stop_event=stop_event,
-        queue_in=spoken_prompt_queue,
+        queue_in=stt_queue_in,
         queue_out=stt_queue_out,
         text_output_queue=text_output_queue,
         should_listen=should_listen,
@@ -447,7 +521,7 @@ def _build_handlers(
         tts_context,
     )
 
-    return [vad, *speech_input_handlers, lm, lm_processor, tts]
+    return [vad, *([speaker_handler] if speaker_handler is not None else []), *speech_input_handlers, lm, lm_processor, tts]
 
 
 def _build_pipeline_unit(
@@ -459,6 +533,7 @@ def _build_pipeline_unit(
     stt_backend: BackendSelection,
     llm_backend: BackendSelection,
     tts_backend: BackendSelection,
+    speaker_memory_kwargs: SpeakerMemoryArguments,
 ) -> "PipelineUnit":
     """Build one isolated pipeline with its own state and queues.
 
@@ -521,6 +596,7 @@ def _build_pipeline_unit(
         speculative_turns=speculative_turns,
         cancel_scope=cancel_scope,
         pipeline_index=index,
+        speaker_memory_kwargs=speaker_memory_kwargs,
     )
     for h in handlers:
         h.pipeline_index = index
@@ -558,6 +634,7 @@ def build_pipeline(
             stt_backend=args.stt_backend,
             llm_backend=args.llm_backend,
             tts_backend=args.tts_backend,
+            speaker_memory_kwargs=args.speaker_memory_kwargs,
         )
         for index in range(module_kwargs.num_pipelines)
     ]

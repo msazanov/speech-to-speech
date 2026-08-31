@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
 from speech_to_speech.pipeline.transcript_logging import log_exception
+from speech_to_speech.speaker_memory.models import SpeakerAttribution
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class VADAudio(PipelineMessage):
     turn_revision: int | None = None
     processing_delay_s: float = 0.0
     created_at_s: float = Field(default_factory=perf_counter)
+    speaker: SpeakerAttribution | None = Field(default=None, exclude=True, repr=False)
 
 
 # ── STT → TranscriptionNotifier → LLM ────────────────────────────────
@@ -77,6 +79,7 @@ class Transcription(PipelineMessage):
     turn_id: str | None = None
     turn_revision: int | None = None
     speech_stopped_at_s: float | None = None
+    speaker: SpeakerAttribution | None = Field(default=None, exclude=True, repr=False)
 
 
 class TranscriptionFailure(PipelineMessage):

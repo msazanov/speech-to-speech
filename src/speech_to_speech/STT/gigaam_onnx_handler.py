@@ -94,6 +94,7 @@ class GigaAMONNXSTTHandler(BaseSTTHandler):
             turn_id=vad_audio.turn_id,
             turn_revision=vad_audio.turn_revision,
             speech_stopped_at_s=vad_audio.created_at_s,
+            speaker=vad_audio.speaker,
         )
 
     def cleanup(self) -> None:
