@@ -76,6 +76,8 @@ def test_mcp_adapter_registers_same_semantic_tools(monkeypatch) -> None:
         "speaker_memory_remember_name",
         "speaker_memory_confirm",
         "speaker_memory_reject",
+        "speaker_memory_block_voice",
+        "speaker_memory_unblock_voice",
         "speaker_memory_remember_fact",
         "speaker_memory_recall",
         "speaker_memory_forget",

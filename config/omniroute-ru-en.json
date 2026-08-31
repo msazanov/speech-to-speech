@@ -4,6 +4,7 @@
   "tts": "silero",
   "host": "127.0.0.1",
   "port": 8765,
+  "log_transcripts": false,
   "gigaam_onnx_stt_model_name": "gigaam-multilingual-ctc",
   "gigaam_onnx_stt_quantization": "int8",
   "gigaam_onnx_stt_provider": "CPUExecutionProvider",

@@ -10,6 +10,7 @@ from speech_to_speech.speaker_memory.models import (
     ExpiredSpeakerReference,
     InvalidEmbedding,
     SpeakerReferenceConversationMismatch,
+    SupersededSpeakerReference,
     UnknownSpeakerReference,
 )
 from speech_to_speech.speaker_memory.store import SpeakerMemoryStore
@@ -101,6 +102,66 @@ def test_reference_resolves_only_for_its_conversation_before_expiry(
 
     clock.now = 131.0
     with pytest.raises(ExpiredSpeakerReference):
+        store.resolve_reference(speaker_ref, conversation_id="conv_1")
+
+
+def test_only_latest_reference_can_authorize_voice_routing_mutation(
+    store: SpeakerMemoryStore,
+) -> None:
+    first_voice = store.create_voice_cluster(np.array([1.0, 0.0], dtype=np.float32), quality=1.0)
+    second_voice = store.create_voice_cluster(np.array([0.0, 1.0], dtype=np.float32), quality=1.0)
+    first_observation = store.create_observation(
+        first_voice.id,
+        turn_id="turn_1",
+        turn_revision=0,
+        conversation_id="conv_1",
+        quality=1.0,
+    )
+    first_ref = store.issue_reference(first_observation.id, conversation_id="conv_1", ttl_s=30)
+    second_observation = store.create_observation(
+        second_voice.id,
+        turn_id="turn_2",
+        turn_revision=0,
+        conversation_id="conv_1",
+        quality=1.0,
+    )
+    second_ref = store.issue_reference(second_observation.id, conversation_id="conv_1", ttl_s=30)
+
+    with pytest.raises(SupersededSpeakerReference):
+        store.set_voice_blocked_by_reference(
+            first_ref,
+            conversation_id="conv_1",
+            blocked=True,
+            reason="background_tv",
+        )
+
+    voice_id = store.set_voice_blocked_by_reference(
+        second_ref,
+        conversation_id="conv_1",
+        blocked=True,
+        reason="background_tv",
+    )
+    assert voice_id == second_voice.id
+    assert store.is_voice_blocked(first_voice.id) is False
+    assert store.is_voice_blocked(second_voice.id) is True
+
+
+def test_unattributed_final_turn_can_invalidate_all_prior_mutation_references(
+    store: SpeakerMemoryStore,
+) -> None:
+    voice = store.create_voice_cluster(np.array([1.0, 0.0], dtype=np.float32), quality=1.0)
+    observation = store.create_observation(
+        voice.id,
+        turn_id="turn_1",
+        turn_revision=0,
+        conversation_id="conv_1",
+        quality=1.0,
+    )
+    speaker_ref = store.issue_reference(observation.id, conversation_id="conv_1", ttl_s=30)
+
+    assert store.invalidate_references("conv_1") == 1
+
+    with pytest.raises(UnknownSpeakerReference):
         store.resolve_reference(speaker_ref, conversation_id="conv_1")
 
 
@@ -217,7 +278,7 @@ def test_schema_v2_database_migrates_to_current_version(tmp_path) -> None:
 
     store = SpeakerMemoryStore(path)
 
-    assert store._connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 3
+    assert store._connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 4
     assert store._connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='speaker_reference_candidates'"
     ).fetchone()

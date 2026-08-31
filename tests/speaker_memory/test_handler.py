@@ -23,12 +23,28 @@ class FakeExtractor:
 
 
 class FakeTracker:
-    def __init__(self) -> None:
+    def __init__(self, attribution: SpeakerAttribution | None = None) -> None:
         self.calls = []
+        self.attribution = attribution
+        self.store = FakeStore()
 
     def observe(self, embedding: np.ndarray, **kwargs) -> SpeakerAttribution:
         self.calls.append((embedding, kwargs))
-        return SpeakerAttribution(voice_id="v_test", speaker_ref="sr_test", state=SpeakerState.UNKNOWN)
+        return self.attribution or SpeakerAttribution(
+            voice_id="v_test", speaker_ref="sr_test", state=SpeakerState.UNKNOWN
+        )
+
+
+class FakeStore:
+    def __init__(self) -> None:
+        self.invalidated: list[str] = []
+
+    def invalidate_references(self, conversation_id: str) -> int:
+        self.invalidated.append(conversation_id)
+        return 0
+
+    def prune_expired(self) -> dict[str, int]:
+        return {"references": 0, "observations": 0}
 
 
 def bare_handler(extractor: FakeExtractor, tracker: FakeTracker, *, min_audio_ms: int = 700):
@@ -66,18 +82,48 @@ def test_final_audio_is_attributed_but_progressive_audio_is_not(caplog) -> None:
     assert final.speaker.speaker_ms > 0
     assert extractor.calls == 1
     assert tracker.calls[0][1]["conversation_id"] == "conv_test"
-    assert "Speaker attributed voice=v_test state=unknown" in caplog.text
+    assert "Speaker attributed voice=v_test state=unknown person_id=unknown" in caplog.text
     assert "sr_test" not in caplog.text
 
 
 def test_short_final_audio_passes_through_without_inference() -> None:
     extractor = FakeExtractor()
-    handler = bare_handler(extractor, FakeTracker(), min_audio_ms=700)
+    tracker = FakeTracker()
+    handler = bare_handler(extractor, tracker, min_audio_ms=700)
 
     result = list(handler.process(audio(samples=8000)))[0]
 
     assert getattr(result, "speaker", None) is None
     assert extractor.calls == 0
+    assert tracker.store.invalidated == ["conv_test"]
+
+
+def test_blacklisted_voice_is_explicitly_rejected_before_stt(caplog) -> None:
+    tracker = FakeTracker(
+        SpeakerAttribution(
+            voice_id="v_tv",
+            state=SpeakerState.BLACKLISTED,
+            recommendation="do_not_learn",
+        )
+    )
+    handler = bare_handler(FakeExtractor(), tracker)
+    caplog.set_level(logging.INFO)
+
+    assert list(handler.process(audio())) == []
+    assert "Audio rejected reason=blacklisted_voice voice=v_tv" in caplog.text
+
+
+def test_reference_invalidation_failure_rejects_turn_before_stt(caplog) -> None:
+    tracker = FakeTracker()
+    tracker.store.invalidate_references = lambda _conversation_id: (_ for _ in ()).throw(
+        RuntimeError("private database detail")
+    )
+    handler = bare_handler(FakeExtractor(), tracker)
+    caplog.set_level(logging.WARNING)
+
+    assert list(handler.process(audio())) == []
+    assert "Audio rejected reason=speaker_authority_error error_type=RuntimeError" in caplog.text
+    assert "private database detail" not in caplog.text
 
 
 def test_low_signal_final_audio_is_rejected_before_embedding() -> None:

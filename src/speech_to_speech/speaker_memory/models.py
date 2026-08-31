@@ -17,6 +17,7 @@ class SpeakerState(str, Enum):
     UNKNOWN = "unknown"
     CONFLICT = "conflict"
     MIXED = "mixed"
+    BLACKLISTED = "blacklisted"
 
 
 class SpeakerMemoryError(Exception):
@@ -37,6 +38,10 @@ class UnknownSpeakerReference(SpeakerReferenceError):
 
 class ExpiredSpeakerReference(SpeakerReferenceError):
     """Raised when a speaker reference is no longer valid."""
+
+
+class SupersededSpeakerReference(SpeakerReferenceError):
+    """Raised when a newer speaker turn replaced this mutation authority."""
 
 
 class SpeakerReferenceConversationMismatch(SpeakerReferenceError):

@@ -68,11 +68,48 @@ Torch cache во время старта. Проверка NLTK ищет POS-tag
 ```bash
 uv run speech-to-speech talk \
   --url ws://127.0.0.1:8765/v1/realtime \
-  --block-mic-during-playback
+  --echo-cancel
 ```
+
+AEC использует CPU только во время фактического воспроизведения TTS. Между
+репликами исходный микрофонный поток идёт напрямую; при overlap синхронная пара
+`playback + mic` очищается вне PortAudio callback. Микрофон не выключается, так
+что перебивание не теряется.
 
 Если устройство по умолчанию выбрано неверно, выполните `uv run python -m
 sounddevice` и передайте номера через `--input-device` и `--output-device`.
+
+## Живой журнал
+
+Обычный journal без оформления:
+
+```bash
+journalctl --user -u huggingvoice.service -n 0 -f -o cat
+```
+
+Человекочитаемый просмотрщик с цветами этапов и стабильным отдельным цветом для
+каждого `voice_id`/подтверждённого имени:
+
+```bash
+python scripts/watch_voice_log.py --service huggingvoice.service --history 50
+```
+
+По умолчанию журнал скрывает содержание разговора. Для диагностического запуска
+добавьте явный `--log-transcripts`, например
+`speech-to-speech serve config/omniroute-ru-en.json --log-transcripts`: тогда journal содержит STT-текст, полный
+текстовый prompt к LLM и видимый ответ, а также STT/LLM/TTS/AEC timing, токены и
+решения маршрутизатора. Аудио PCM, изображения, API-ключи и скрытое reasoning не
+записываются. Такой journal следует считать приватным.
+
+Если голос ошибочно попал в blacklist и его краткоживущая ссылка уже истекла,
+оператор может восстановить его напрямую локальной командой (этот путь не
+экспонируется LLM):
+
+```bash
+huggingvoice-speaker-memory-admin \
+  --database ~/.local/share/huggingvoice/speaker-memory.sqlite3 \
+  unblock v_ID_ИЗ_ЦВЕТНОГО_ЛОГА
+```
 
 ## Замкнутый акустический тест
 

@@ -64,6 +64,25 @@ def test_decisive_match_reuses_voice_and_updates_centroid(store: SpeakerMemorySt
     assert np.linalg.norm(updated.centroid) == pytest.approx(1.0)
 
 
+def test_decisive_match_to_blacklisted_voice_is_rejected_without_centroid_drift(
+    store: SpeakerMemoryStore,
+) -> None:
+    memory_tracker = tracker(store)
+    first = observe(memory_tracker, unit([1.0, 0.0]))
+    before = store.get_voice_cluster(first.voice_id)
+    store.set_voice_blocked(first.voice_id, blocked=True, reason="background_tv")
+
+    result = observe(memory_tracker, unit([0.99, 0.02]), turn_id="turn_tv")
+
+    after = store.get_voice_cluster(first.voice_id)
+    assert result.state is SpeakerState.BLACKLISTED
+    assert result.voice_id == first.voice_id
+    assert result.speaker_ref is None
+    assert result.recommendation == "do_not_learn"
+    assert after.sample_count == before.sample_count
+    assert np.array_equal(after.centroid, before.centroid)
+
+
 def test_ambiguous_observation_does_not_move_a_centroid(store: SpeakerMemoryStore) -> None:
     first = store.create_voice_cluster(unit([1.0, 0.0]), quality=1.0)
     store.create_voice_cluster(unit([0.98, 0.2]), quality=1.0)

@@ -23,6 +23,7 @@ from speech_to_speech.pipeline.messages import (
 from speech_to_speech.pipeline.transcript_logging import (
     log_transcripts_enabled,
     set_log_transcripts,
+    structured_for_log,
     transcript_for_log,
     warn_if_log_transcripts_enabled,
 )
@@ -202,6 +203,28 @@ def test_transcript_for_log_returns_stringified_content_when_opted_in():
 
     assert transcript_for_log("hello") == "hello"
     assert transcript_for_log(42) == "42"
+
+
+def test_structured_log_keeps_text_but_redacts_embedded_media_when_opted_in():
+    set_log_transcripts(True)
+    try:
+        rendered = structured_for_log(
+            [{"role": "user", "content": [{"type": "input_text", "text": "Привет"}, {"type": "input_audio", "input_audio": {"data": "SECRET_AUDIO", "format": "wav"}}]}]
+        )
+    finally:
+        set_log_transcripts(False)
+
+    assert "Привет" in rendered
+    assert "SECRET_AUDIO" not in rendered
+    assert "<media omitted>" in rendered
+
+
+def test_structured_log_does_not_traverse_prompt_history_when_gate_is_off():
+    class SensitivePrompt:
+        def model_dump(self, **_kwargs):
+            raise AssertionError("redacted logging must not serialize prompt history")
+
+    assert structured_for_log(SensitivePrompt()) == "structured_content=redacted"
 
 
 def test_no_warning_when_the_gate_is_off(caplog):

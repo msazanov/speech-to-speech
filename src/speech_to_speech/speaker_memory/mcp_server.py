@@ -79,6 +79,33 @@ def build_mcp_server(
         )
 
     @server.tool()
+    def speaker_memory_block_voice(speaker_ref: str, reason: str) -> dict[str, Any]:
+        return _tool_call(
+            lambda: {
+                "voice_id": service.set_voice_blocked(
+                    speaker_ref,
+                    blocked=True,
+                    reason=reason,
+                    conversation_id=conversation_id_provider(),
+                ),
+                "blocked": True,
+            }
+        )
+
+    @server.tool()
+    def speaker_memory_unblock_voice(speaker_ref: str) -> dict[str, Any]:
+        return _tool_call(
+            lambda: {
+                "voice_id": service.set_voice_blocked(
+                    speaker_ref,
+                    blocked=False,
+                    conversation_id=conversation_id_provider(),
+                ),
+                "blocked": False,
+            }
+        )
+
+    @server.tool()
     def speaker_memory_remember_fact(
         speaker_ref: str,
         fact: str,

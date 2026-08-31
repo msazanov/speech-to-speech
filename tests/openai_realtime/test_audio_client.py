@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 import signal
@@ -13,6 +14,7 @@ from speech_to_speech.api.openai_realtime.audio_client import (
     PlaybackBuffer,
     RealtimeAudioClientConfig,
     ToolResult,
+    _DuplexFrameRing,
     _FriendlyEventRenderer,
     _ToolCallCoordinator,
     _ToolCoordinatorError,
@@ -264,6 +266,38 @@ def test_playback_buffer_starts_immediately_by_default():
 
     assert callback == b"\x04" * 100
     assert playback.buffered_bytes == 0
+
+
+def test_playback_buffer_callback_path_uses_a_fixed_lock_free_ring():
+    playback = PlaybackBuffer(1000, callback_bytes=4, capacity_bytes=8)
+    playback.append(b"abcdef")
+
+    first = bytearray(4)
+    second = bytearray(4)
+    assert playback.write(first) is True
+    assert playback.write(second) is True
+
+    assert first == b"abcd"
+    assert second == b"ef\x00\x00"
+    assert playback.buffered_bytes == 0
+    assert not hasattr(playback, "_lock")
+
+
+def test_duplex_frame_ring_uses_preallocated_slots_and_reports_overflow():
+    ring = _DuplexFrameRing(frame_bytes=4, capacity=2)
+    playback = bytearray(b"abcd")
+    capture = bytearray(b"1234")
+
+    assert ring.write(playback, capture, tts_active=False, status=False) is True
+    playback[:] = b"efgh"
+    capture[:] = b"5678"
+    assert ring.write(playback, capture, tts_active=True, status=True) is True
+    assert ring.write(playback, capture, tts_active=True, status=False) is False
+
+    assert ring.read() == (b"abcd", b"1234", False, False)
+    assert ring.read() == (b"efgh", b"5678", True, True)
+    assert ring.read() is None
+    assert ring.pending == 0
 
 
 @pytest.mark.parametrize("buffer_ms", [-1, float("inf"), float("nan")])
@@ -1266,9 +1300,9 @@ async def test_audio_streams_are_cleaned_up_when_output_start_fails(monkeypatch)
 
     original_playback_buffer = PlaybackBuffer
 
-    def recording_playback_buffer(recv_rate, startup_buffer_ms):
-        playback_args.append((recv_rate, startup_buffer_ms))
-        return original_playback_buffer(recv_rate, startup_buffer_ms)
+    def recording_playback_buffer(recv_rate, startup_buffer_ms, **kwargs):
+        playback_args.append((recv_rate, startup_buffer_ms, kwargs))
+        return original_playback_buffer(recv_rate, startup_buffer_ms, **kwargs)
 
     class FakeStream:
         def __init__(self, name, *, fail_start=False):
@@ -1302,7 +1336,7 @@ async def test_audio_streams_are_cleaned_up_when_output_start_fails(monkeypatch)
             Event(),
         )
 
-    assert playback_args == [(16000, 240)]
+    assert playback_args == [(16000, 240, {"callback_bytes": 2048})]
     assert events == [
         "input.start",
         "output.start",
@@ -1336,6 +1370,154 @@ async def test_open_input_stream_is_closed_when_output_construction_fails(monkey
         )
 
     assert events == ["input.close"]
+
+
+async def test_audio_session_sends_aec_cleaned_microphone_audio_and_closes_engine(monkeypatch):
+    stop_event = Event()
+    aec_events = []
+    cleaned = b"\x34\x12" * 1024
+
+    class FakeEchoCanceller:
+        def __init__(self, **kwargs):
+            aec_events.append(("init", kwargs))
+
+        def process_duplex(self, playback, capture):
+            aec_events.append(("duplex", bytes(playback), bytes(capture)))
+            return cleaned
+
+        def drain(self):
+            aec_events.append(("drain",))
+
+        def close(self):
+            aec_events.append(("close",))
+
+    class FakeDuplexStream:
+        def __init__(self, callback):
+            self.callback = callback
+
+        def start(self):
+            self.callback(b"\x78\x56" * 1024, bytearray(2048), 1024, None, None)
+            self.callback(b"\xbc\x9a" * 1024, bytearray(2048), 1024, None, None)
+            self.callback(b"\xf0\xde" * 1024, bytearray(2048), 1024, None, None)
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    fake_sounddevice = SimpleNamespace(
+        RawStream=lambda **kwargs: FakeDuplexStream(kwargs["callback"]),
+    )
+
+    class FakeConnection:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, event):
+            self.sent.append(event)
+            if len(self.sent) == 3:
+                stop_event.set()
+
+        async def recv(self):
+            await asyncio.sleep(60)
+
+    conn = FakeConnection()
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sounddevice)
+    monkeypatch.setattr(audio_client_module, "SpeexEchoCanceller", FakeEchoCanceller)
+
+    class RoutePlaybackBuffer:
+        def __init__(self, *_args, **_kwargs):
+            self.routes = iter((False, True, False))
+
+        def write(self, _outdata):
+            return next(self.routes)
+
+        def clear(self):
+            pass
+
+    monkeypatch.setattr(audio_client_module, "PlaybackBuffer", RoutePlaybackBuffer)
+
+    await audio_client_module._run_audio_session(
+        conn,
+        RealtimeAudioClientConfig(echo_cancel=True),
+        stop_event,
+    )
+
+    assert [base64.b64decode(event["audio"]) for event in conn.sent] == [
+        b"\x78\x56" * 1024,
+        cleaned,
+        cleaned,
+    ]
+    assert [event[0] for event in aec_events] == ["init", "duplex", "duplex", "close"]
+    assert aec_events[0][1] == {
+        "sample_rate": 16000,
+        "callback_frames": 1024,
+        "frame_ms": 16,
+        "filter_ms": 300,
+    }
+
+
+async def test_audio_session_propagates_aec_worker_failure_and_destroys_engine_once(monkeypatch):
+    stop_event = Event()
+    closes = []
+
+    class FailingEchoCanceller:
+        def __init__(self, **_kwargs):
+            pass
+
+        def process_duplex(self, _playback, _capture):
+            raise RuntimeError("aec worker failed")
+
+        def close(self):
+            closes.append("close")
+
+    class FakeDuplexStream:
+        def __init__(self, callback):
+            self.callback = callback
+
+        def start(self):
+            self.callback(b"\x00" * 2048, bytearray(2048), 1024, None, None)
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    fake_sounddevice = SimpleNamespace(
+        RawStream=lambda **kwargs: FakeDuplexStream(kwargs["callback"]),
+    )
+
+    class ActivePlaybackBuffer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def write(self, _outdata):
+            return True
+
+        def clear(self):
+            pass
+
+    class BlockingConnection:
+        async def send(self, _event):
+            raise AssertionError("failed AEC audio must not be sent")
+
+        async def recv(self):
+            await asyncio.sleep(60)
+
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sounddevice)
+    monkeypatch.setattr(audio_client_module, "SpeexEchoCanceller", FailingEchoCanceller)
+    monkeypatch.setattr(audio_client_module, "PlaybackBuffer", ActivePlaybackBuffer)
+
+    with pytest.raises(RuntimeError, match="aec worker failed"):
+        await audio_client_module._run_audio_session(
+            BlockingConnection(),
+            RealtimeAudioClientConfig(echo_cancel=True),
+            stop_event,
+        )
+
+    assert closes == ["close"]
 
 
 async def test_audio_client_startup_and_shutdown_use_public_realtime_connection(monkeypatch):

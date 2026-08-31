@@ -144,6 +144,9 @@ def parse_talk_arguments(argv: Sequence[str]) -> RealtimeAudioClientConfig:
         action="store_true",
         default=defaults.block_mic_during_playback,
     )
+    parser.add_argument("--echo-cancel", action="store_true", default=defaults.echo_cancel)
+    parser.add_argument("--echo-cancel-frame-ms", type=int, default=defaults.echo_cancel_frame_ms)
+    parser.add_argument("--echo-cancel-filter-ms", type=int, default=defaults.echo_cancel_filter_ms)
     parser.add_argument(
         "--log-transcripts",
         "--log_transcripts",
@@ -178,6 +181,9 @@ def parse_talk_arguments(argv: Sequence[str]) -> RealtimeAudioClientConfig:
         voice=namespace.voice,
         print_json=namespace.print_json,
         block_mic_during_playback=namespace.block_mic_during_playback,
+        echo_cancel=namespace.echo_cancel,
+        echo_cancel_frame_ms=namespace.echo_cancel_frame_ms,
+        echo_cancel_filter_ms=namespace.echo_cancel_filter_ms,
         log_transcripts=namespace.log_transcripts,
         connection_retry_timeout_s=namespace.connection_retry_timeout,
         tools=tools,

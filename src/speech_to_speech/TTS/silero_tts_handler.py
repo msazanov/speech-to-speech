@@ -4,6 +4,7 @@ import logging
 from math import gcd
 from pathlib import Path
 from threading import Event
+from time import perf_counter
 from typing import Iterator
 
 import numpy as np
@@ -16,6 +17,7 @@ from speech_to_speech.pipeline.cancel_scope import CancelScope
 from speech_to_speech.pipeline.handler_types import TTSIn, TTSOut
 from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, EndOfResponse
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+from speech_to_speech.pipeline.transcript_logging import transcript_for_log
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -132,6 +134,7 @@ class SileroTTSHandler(BaseHandler[TTSIn, TTSOut]):
             return
 
         console.print(f"[green]ASSISTANT: {text}")
+        started = perf_counter()
         wav = self.model.apply_tts(
             text=text,
             speaker=self.speaker,
@@ -150,6 +153,16 @@ class SileroTTSHandler(BaseHandler[TTSIn, TTSOut]):
             self.sample_rate // divisor,
         )
         audio_int16 = np.clip(audio_16k * 32768, -32768, 32767).astype(np.int16)
+        synth_ms = (perf_counter() - started) * 1000
+        audio_ms = len(audio_int16) * 1000 / PIPELINE_SAMPLE_RATE
+        logger.info(
+            "TTS completed backend=silero voice=%s synth_ms=%.1f audio_ms=%.1f rtf=%.3f text=%s",
+            self.speaker,
+            synth_ms,
+            audio_ms,
+            synth_ms / audio_ms if audio_ms else 0.0,
+            transcript_for_log(text),
+        )
 
         full_samples = (len(audio_int16) // self.blocksize) * self.blocksize
         for offset in range(0, full_samples, self.blocksize):

@@ -22,6 +22,7 @@ from .models import (
     SpeakerObservation,
     SpeakerReference,
     SpeakerReferenceConversationMismatch,
+    SupersededSpeakerReference,
     UnknownSpeakerReference,
     VoiceCluster,
 )
@@ -42,7 +43,7 @@ def normalize_embedding(embedding: np.ndarray) -> np.ndarray:
 class SpeakerMemoryStore:
     """Small synchronous store intended for one in-process pipeline."""
 
-    _SCHEMA_VERSION = 3
+    _SCHEMA_VERSION = 4
     _MAX_CENTROID_WEIGHT = 20.0
     _MAX_EVIDENCE_SCORE = 10.0
 
@@ -158,13 +159,19 @@ class SpeakerMemoryStore:
             );
             CREATE INDEX IF NOT EXISTS personal_facts_person_idx
                 ON personal_facts(person_id, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS voice_policies (
+                voice_id TEXT PRIMARY KEY REFERENCES voice_clusters(id) ON DELETE CASCADE,
+                blocked INTEGER NOT NULL CHECK (blocked IN (0, 1)),
+                reason TEXT,
+                updated_at REAL NOT NULL
+            );
             COMMIT;
             """
         )
         row = self._connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
         if row is None:
             self._connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (self._SCHEMA_VERSION,))
-        elif row["version"] in {1, 2}:
+        elif row["version"] in {1, 2, 3}:
             self._connection.execute("UPDATE schema_meta SET version = ?", (self._SCHEMA_VERSION,))
         elif row["version"] != self._SCHEMA_VERSION:
             raise RuntimeError(f"unsupported speaker-memory schema version: {row['version']}")
@@ -247,6 +254,89 @@ class SpeakerMemoryStore:
         with self._lock:
             rows = self._connection.execute("SELECT * FROM voice_clusters ORDER BY created_at, id").fetchall()
         return [self._cluster_from_row(row) for row in rows]
+
+    def set_voice_blocked(self, voice_id: str, *, blocked: bool, reason: str | None = None) -> None:
+        """Persist a voice-routing decision without exposing its embedding."""
+
+        normalized_reason = " ".join(reason.split()) if reason else None
+        if normalized_reason is not None and len(normalized_reason) > 80:
+            raise ValueError("voice block reason must be at most 80 characters")
+        with self._transaction():
+            exists = self._connection.execute(
+                "SELECT 1 FROM voice_clusters WHERE id = ?", (voice_id,)
+            ).fetchone()
+            if exists is None:
+                raise KeyError(voice_id)
+            self._connection.execute(
+                """INSERT INTO voice_policies(voice_id, blocked, reason, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(voice_id) DO UPDATE SET
+                       blocked = excluded.blocked,
+                       reason = excluded.reason,
+                       updated_at = excluded.updated_at""",
+                (voice_id, int(blocked), normalized_reason if blocked else None, self.clock()),
+            )
+
+    def set_voice_blocked_by_reference(
+        self,
+        reference: str,
+        *,
+        conversation_id: str,
+        blocked: bool,
+        reason: str | None = None,
+    ) -> str:
+        """Atomically mutate only the voice from the latest turn in a conversation."""
+
+        normalized_reason = " ".join(reason.split()) if reason else None
+        if normalized_reason is not None and len(normalized_reason) > 80:
+            raise ValueError("voice block reason must be at most 80 characters")
+        with self._transaction():
+            row = self._connection.execute(
+                """SELECT r.conversation_id, r.expires_at, o.voice_id, o.rowid AS observation_rowid
+                   FROM speaker_references AS r
+                   JOIN speaker_observations AS o ON o.id = r.observation_id
+                   WHERE r.ref = ?""",
+                (reference,),
+            ).fetchone()
+            if row is None:
+                raise UnknownSpeakerReference("speaker reference does not exist")
+            if row["conversation_id"] != conversation_id:
+                raise SpeakerReferenceConversationMismatch(
+                    "speaker reference belongs to another conversation"
+                )
+            if self.clock() >= row["expires_at"]:
+                raise ExpiredSpeakerReference("speaker reference has expired")
+            latest = self._connection.execute(
+                """SELECT rowid FROM speaker_observations
+                   WHERE conversation_id = ?
+                   ORDER BY created_at DESC, rowid DESC
+                   LIMIT 1""",
+                (conversation_id,),
+            ).fetchone()
+            if latest is None or latest["rowid"] != row["observation_rowid"]:
+                raise SupersededSpeakerReference("speaker reference was superseded by a newer turn")
+            self._connection.execute(
+                """INSERT INTO voice_policies(voice_id, blocked, reason, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(voice_id) DO UPDATE SET
+                       blocked = excluded.blocked,
+                       reason = excluded.reason,
+                       updated_at = excluded.updated_at""",
+                (
+                    row["voice_id"],
+                    int(blocked),
+                    normalized_reason if blocked else None,
+                    self.clock(),
+                ),
+            )
+        return str(row["voice_id"])
+
+    def is_voice_blocked(self, voice_id: str) -> bool:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT blocked FROM voice_policies WHERE voice_id = ?", (voice_id,)
+            ).fetchone()
+        return bool(row["blocked"]) if row is not None else False
 
     def update_voice_cluster(self, voice_id: str, embedding: np.ndarray, *, quality: float) -> VoiceCluster:
         """Add one trusted sample to a centroid using a bounded quality-weighted mean."""
@@ -359,6 +449,16 @@ class SpeakerMemoryStore:
             conversation_id=row["conversation_id"],
             expires_at=row["expires_at"],
         )
+
+    def invalidate_references(self, conversation_id: str) -> int:
+        """Revoke prior turn capabilities before routing a new final segment."""
+
+        with self._transaction():
+            cursor = self._connection.execute(
+                "DELETE FROM speaker_references WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+        return max(cursor.rowcount, 0)
 
     def create_person(self, name: str, *, reuse: bool = True) -> Person:
         display_name = " ".join(name.split())

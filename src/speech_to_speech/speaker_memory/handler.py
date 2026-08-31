@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterator
 from time import perf_counter
@@ -11,6 +12,7 @@ import numpy as np
 
 from speech_to_speech.baseHandler import BaseHandler
 from speech_to_speech.pipeline.messages import VADAudio
+from speech_to_speech.pipeline.transcript_logging import transcript_for_log
 
 from .extractor import SpeakerEmbeddingExtractor
 from .tracker import SpeakerTracker
@@ -51,6 +53,17 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
             yield vad_audio
             return
 
+        # A new final turn supersedes every old LLM mutation capability even if
+        # this segment is later rejected as too short, silent, or invalid.
+        try:
+            self.tracker.store.invalidate_references(self.conversation_id)
+        except Exception as exc:
+            logger.warning(
+                "Audio rejected reason=speaker_authority_error error_type=%s",
+                type(exc).__name__,
+            )
+            return
+
         audio = np.asarray(vad_audio.audio, dtype=np.float32).reshape(-1)
         duration_ms = audio.size * 1000 / self.sample_rate
         if duration_ms < self.min_audio_ms:
@@ -74,12 +87,22 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
             )
             attribution = attribution.model_copy(update={"speaker_ms": (perf_counter() - started) * 1000})
             logger.info(
-                "Speaker attributed voice=%s state=%s margin=%s speaker_ms=%.1f",
+                "Speaker attributed voice=%s state=%s person_id=%s person=%s margin=%s speaker_ms=%.1f",
                 attribution.voice_id,
                 attribution.state.value,
+                attribution.candidate.person_id if attribution.candidate is not None else "unknown",
+                json.dumps(
+                    transcript_for_log(attribution.candidate.name),
+                    ensure_ascii=False,
+                )
+                if attribution.candidate is not None
+                else "unknown",
                 f"{attribution.margin:.3f}" if attribution.margin is not None else "n/a",
                 attribution.speaker_ms,
             )
+            if attribution.state.value == "blacklisted":
+                logger.info("Audio rejected reason=blacklisted_voice voice=%s", attribution.voice_id)
+                return
         except Exception as exc:
             logger.warning("Speaker attribution skipped after %s", type(exc).__name__)
             yield vad_audio

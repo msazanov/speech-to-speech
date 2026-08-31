@@ -46,6 +46,23 @@ class SpeakerMemoryService:
             recommendation="clarify" if state is SpeakerState.CONFLICT else "none",
         )
 
+    def set_voice_blocked(
+        self,
+        speaker_ref: str,
+        *,
+        blocked: bool,
+        reason: str | None = None,
+        conversation_id: str,
+    ) -> str:
+        """Change routing only for the voice authorized by this reference."""
+
+        return self.store.set_voice_blocked_by_reference(
+            speaker_ref,
+            conversation_id=conversation_id,
+            blocked=blocked,
+            reason=reason,
+        )
+
     def remember_name(self, speaker_ref: str, name: str, *, conversation_id: str) -> SpeakerAttribution:
         normalized_name = " ".join(name.split())
         if not normalized_name or len(normalized_name) > self._MAX_NAME_LENGTH:

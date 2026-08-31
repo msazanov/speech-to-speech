@@ -121,6 +121,7 @@ Issues = "https://github.com/huggingface/speech-to-speech/issues"
 [project.scripts]
 speech-to-speech = "speech_to_speech.cli:main"
 huggingvoice-speaker-memory-mcp = "speech_to_speech.speaker_memory.mcp_server:main"
+huggingvoice-speaker-memory-admin = "speech_to_speech.speaker_memory.admin:main"
 
 [dependency-groups]
 dev = [

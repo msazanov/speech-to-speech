@@ -158,6 +158,8 @@ def test_native_policy_and_skill_cover_conflict_privacy_and_every_tool() -> None
         "speaker_memory_remember_name",
         "speaker_memory_confirm",
         "speaker_memory_reject",
+        "speaker_memory_block_voice",
+        "speaker_memory_unblock_voice",
         "speaker_memory_remember_fact",
         "speaker_memory_recall",
         "speaker_memory_forget",

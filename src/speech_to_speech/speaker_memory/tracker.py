@@ -75,6 +75,14 @@ class SpeakerTracker:
             acoustic_state = SpeakerState.AMBIGUOUS
             reported_margin = voice_margin
         else:
+            if self.store.is_voice_blocked(scored[0][0].id):
+                return SpeakerAttribution(
+                    voice_id=scored[0][0].id,
+                    state=SpeakerState.BLACKLISTED,
+                    recommendation="do_not_learn",
+                    margin=voice_margin,
+                    speaker_ms=(time.perf_counter() - started) * 1000,
+                )
             voice = self.store.update_voice_cluster(scored[0][0].id, vector, quality=quality)
             acoustic_state = SpeakerState.UNKNOWN
             reported_margin = voice_margin

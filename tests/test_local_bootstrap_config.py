@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 from configparser import ConfigParser
@@ -7,6 +8,12 @@ from speech_to_speech.s2s_pipeline import parse_arguments
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = ROOT / "config" / "omniroute-ru-en.json"
+
+
+def test_local_profile_does_not_persist_conversation_text_without_explicit_opt_in() -> None:
+    profile = json.loads(PROFILE.read_text())
+
+    assert profile.get("log_transcripts", False) is False
 HUGGINGVOICE_UNIT = ROOT / "deploy" / "systemd" / "huggingvoice.service"
 
 

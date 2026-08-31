@@ -40,11 +40,38 @@ def tool_schema(name: str) -> dict:
 
 
 def test_mutation_tools_never_accept_raw_voice_id_or_numeric_weight() -> None:
-    for name in ("speaker_memory_remember_name", "speaker_memory_confirm", "speaker_memory_reject"):
+    for name in (
+        "speaker_memory_remember_name",
+        "speaker_memory_confirm",
+        "speaker_memory_reject",
+        "speaker_memory_block_voice",
+        "speaker_memory_unblock_voice",
+    ):
         properties = tool_schema(name)["parameters"]["properties"]
         assert "speaker_ref" in properties
         assert "voice_id" not in properties
         assert "weight" not in properties
+
+
+@pytest.mark.asyncio
+async def test_agent_can_block_and_immediately_unblock_current_voice_by_reference(tool_runtime) -> None:
+    store, attributed = tool_runtime
+
+    blocked = await execute_tool(
+        "speaker_memory_block_voice",
+        {"speaker_ref": attributed.speaker_ref, "reason": "background_tv"},
+    )
+    assert blocked.output == {"ok": True, "voice_id": attributed.voice_id, "blocked": True}
+    assert blocked.create_response is False
+    assert store.is_voice_blocked(attributed.voice_id) is True
+
+    unblocked = await execute_tool(
+        "speaker_memory_unblock_voice",
+        {"speaker_ref": attributed.speaker_ref},
+    )
+    assert unblocked.output == {"ok": True, "voice_id": attributed.voice_id, "blocked": False}
+    assert unblocked.create_response is False
+    assert store.is_voice_blocked(attributed.voice_id) is False
 
 
 @pytest.mark.asyncio

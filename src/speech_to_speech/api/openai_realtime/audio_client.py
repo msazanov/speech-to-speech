@@ -18,8 +18,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from importlib import import_module
 from ipaddress import ip_address
+from math import ceil
 from queue import Empty, Full, Queue
-from threading import Event, Lock
+from threading import Event
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
@@ -27,6 +28,7 @@ from jsonschema import SchemaError, ValidationError
 from jsonschema.validators import validator_for
 from openai import AsyncOpenAI
 
+from speech_to_speech.api.openai_realtime.echo_cancellation import SpeexEchoCanceller
 from speech_to_speech.pipeline.transcript_logging import log_exception
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,9 @@ class RealtimeAudioClientConfig:
     voice: Optional[str] = None
     print_json: bool = False
     block_mic_during_playback: bool = False
+    echo_cancel: bool = False
+    echo_cancel_frame_ms: int = 16
+    echo_cancel_filter_ms: int = 300
     log_transcripts: bool = False
     connection_retry_timeout_s: float = 30.0
     tools: list[dict[str, Any]] = field(default_factory=list)
@@ -71,6 +76,25 @@ class RealtimeAudioClientConfig:
     def __post_init__(self) -> None:
         if not 0 <= self.playback_buffer_ms < float("inf"):
             raise ValueError("playback_buffer_ms must be a finite non-negative number")
+        if self.echo_cancel and self.block_mic_during_playback:
+            raise ValueError("echo_cancel and block_mic_during_playback are mutually exclusive")
+        if self.echo_cancel and self.send_rate != self.recv_rate:
+            raise ValueError("echo_cancel requires equal send_rate and recv_rate")
+        if self.echo_cancel:
+            if self.send_rate <= 0 or self.recv_rate <= 0:
+                raise ValueError("echo_cancel requires positive sample rates")
+            if not 10 <= self.echo_cancel_frame_ms <= 20:
+                raise ValueError("echo_cancel_frame_ms must be between 10 and 20")
+            if not 100 <= self.echo_cancel_filter_ms <= 500:
+                raise ValueError("echo_cancel_filter_ms must be between 100 and 500")
+            if self.chunk_size <= 0:
+                raise ValueError("chunk_size must be positive")
+            frame_product = self.send_rate * self.echo_cancel_frame_ms
+            if frame_product % 1000:
+                raise ValueError("echo_cancel_frame_ms must produce a whole number of samples")
+            frame_samples = frame_product // 1000
+            if self.chunk_size % frame_samples:
+                raise ValueError(f"chunk_size must be a positive multiple of {frame_samples} AEC samples")
 
 
 def load_realtime_tool_module(module_name: str) -> tuple[list[dict[str, Any]], ToolExecutor, bool]:
@@ -208,72 +232,155 @@ def build_session_update(config: RealtimeAudioClientConfig) -> dict[str, Any]:
 
 
 class PlaybackBuffer:
-    """Thread-safe audio state shared by the Realtime loop and sounddevice callbacks."""
+    """Bounded lock-free SPSC playback ring shared with the PortAudio callback."""
 
-    def __init__(self, recv_rate: int, startup_buffer_ms: float = _PLAYBACK_START_BUFFER_MS) -> None:
+    def __init__(
+        self,
+        recv_rate: int,
+        startup_buffer_ms: float = _PLAYBACK_START_BUFFER_MS,
+        *,
+        callback_bytes: int = 65_536,
+        capacity_bytes: int | None = None,
+    ) -> None:
         if recv_rate <= 0:
             raise ValueError("recv_rate must be positive")
         if not 0 <= startup_buffer_ms < float("inf"):
             raise ValueError("startup_buffer_ms must be a finite non-negative number")
         self.recv_rate = recv_rate
+        if callback_bytes <= 0:
+            raise ValueError("callback_bytes must be positive")
+        capacity_bytes = capacity_bytes or recv_rate * 2 * 120
+        if capacity_bytes < callback_bytes:
+            raise ValueError("capacity_bytes must be at least callback_bytes")
         self._startup_buffer_bytes = int(recv_rate * 2 * startup_buffer_ms / 1000)
         self._startup_buffer_bytes -= self._startup_buffer_bytes % 2
-        self._audio = bytearray()
-        self._lock = Lock()
+        self._audio = bytearray(capacity_bytes)
+        self._audio_view = memoryview(self._audio)
+        self._capacity = capacity_bytes
+        self._read_total = 0
+        self._write_total = 0
+        self._clear_before_total = 0
+        self._silence = bytes(callback_bytes)
+        self._silence_view = memoryview(self._silence)
         self._active_until = 0.0
         self._playing = False
         self._input_complete = False
 
     def clear(self) -> None:
-        with self._lock:
-            self._active_until = 0.0
-            self._audio.clear()
-            self._playing = False
-            self._input_complete = False
+        self._active_until = 0.0
+        self._clear_before_total = self._write_total
+        self._playing = False
+        self._input_complete = False
 
     def append(self, audio: bytes) -> None:
         if not audio:
             return
-        with self._lock:
-            if self._input_complete and not self._audio:
-                self._playing = False
-            self._input_complete = False
-            self._audio.extend(audio)
-            self._active_until = time.monotonic() + max(0.15, len(audio) / (2 * self.recv_rate))
+        buffered = self.buffered_bytes
+        if len(audio) > self._capacity - buffered:
+            raise BufferError("local playback buffer is full")
+        if self._input_complete and not buffered:
+            self._playing = False
+        write_index = self._write_total % self._capacity
+        first = min(len(audio), self._capacity - write_index)
+        self._audio[write_index : write_index + first] = audio[:first]
+        remaining = len(audio) - first
+        if remaining:
+            self._audio[:remaining] = audio[first:]
+        self._write_total += len(audio)
+        self._input_complete = False
+        self._active_until = time.monotonic() + max(0.15, len(audio) / (2 * self.recv_rate))
 
     def finish(self) -> None:
         """Allow a completed short response to play before reaching the startup target."""
 
-        with self._lock:
-            self._input_complete = True
+        self._input_complete = True
 
     def is_active(self) -> bool:
-        with self._lock:
-            return bool(self._audio) or time.monotonic() < self._active_until
+        return bool(self.buffered_bytes) or time.monotonic() < self._active_until
 
-    def write(self, outdata: Any) -> None:
+    def write(self, outdata: Any) -> bool:
+        """Write one output callback and report whether it contains queued TTS audio."""
+
         needed = len(outdata)
-        with self._lock:
-            if not self._playing:
-                ready = len(self._audio) >= self._startup_buffer_bytes
-                if not ready and not (self._input_complete and self._audio):
-                    outdata[:] = b"\x00" * needed
-                    return
-                self._playing = True
-            available = min(needed, len(self._audio))
-            if available:
-                outdata[:available] = self._audio[:available]
-                del self._audio[:available]
-            if available < needed:
-                outdata[available:] = b"\x00" * (needed - available)
-                self._playing = False
-            if not self._audio and self._input_complete:
-                self._playing = False
+        if self._read_total < self._clear_before_total:
+            self._read_total = self._clear_before_total
+        buffered = self._write_total - self._read_total
+        if needed > len(self._silence):
+            raise ValueError("playback callback is larger than its preallocated silence block")
+        if not self._playing:
+            ready = buffered >= self._startup_buffer_bytes
+            if not ready and not (self._input_complete and buffered):
+                outdata[:] = self._silence_view[:needed]
+                return False
+            self._playing = True
+        available = min(needed, buffered)
+        if available:
+            read_index = self._read_total % self._capacity
+            first = min(available, self._capacity - read_index)
+            outdata[:first] = self._audio_view[read_index : read_index + first]
+            remaining = available - first
+            if remaining:
+                outdata[first:available] = self._audio_view[:remaining]
+            self._read_total += available
+        if available < needed:
+            outdata[available:] = self._silence_view[: needed - available]
+            self._playing = False
+        if self._write_total == self._read_total and self._input_complete:
+            self._playing = False
+        return available > 0
 
     @property
     def buffered_bytes(self) -> int:
-        with self._lock:
-            return len(self._audio)
+        effective_read = max(self._read_total, self._clear_before_total)
+        return self._write_total - effective_read
+
+
+class _DuplexFrameRing:
+    """Preallocated SPSC frames; callback writes and asyncio worker reads."""
+
+    def __init__(self, *, frame_bytes: int, capacity: int) -> None:
+        if frame_bytes <= 0 or capacity <= 0:
+            raise ValueError("duplex ring dimensions must be positive")
+        self._playback = [bytearray(frame_bytes) for _ in range(capacity)]
+        self._capture = [bytearray(frame_bytes) for _ in range(capacity)]
+        self._tts_active = [False] * capacity
+        self._status = [False] * capacity
+        self._capacity = capacity
+        self._write_total = 0
+        self._read_total = 0
+
+    def write(self, playback: Any, capture: Any, *, tts_active: bool, status: bool) -> bool:
+        if self._write_total - self._read_total == self._capacity:
+            return False
+        slot = self._write_total % self._capacity
+        self._playback[slot][:] = playback
+        self._capture[slot][:] = capture
+        self._tts_active[slot] = tts_active
+        self._status[slot] = status
+        self._write_total += 1
+        return True
+
+    def read(self) -> tuple[bytes, bytes, bool, bool] | None:
+        if self._read_total == self._write_total:
+            return None
+        slot = self._read_total % self._capacity
+        item = (
+            bytes(self._playback[slot]),
+            bytes(self._capture[slot]),
+            self._tts_active[slot],
+            self._status[slot],
+        )
+        self._read_total += 1
+        return item
+
+    @property
+    def pending(self) -> int:
+        return self._write_total - self._read_total
+
+    def discard_all(self) -> int:
+        discarded = self.pending
+        self._read_total = self._write_total
+        return discarded
 
 
 class _FriendlyEventRenderer:
@@ -840,9 +947,43 @@ async def _run_audio_session(
     import sounddevice as sd
 
     mic_queue: Queue[bytes] = Queue(maxsize=128)
-    playback = PlaybackBuffer(config.recv_rate, startup_buffer_ms=config.playback_buffer_ms)
+    callback_bytes = config.chunk_size * 2
+    aec_ring = _DuplexFrameRing(frame_bytes=callback_bytes, capacity=32)
+    playback = PlaybackBuffer(
+        config.recv_rate,
+        startup_buffer_ms=config.playback_buffer_ms,
+        callback_bytes=callback_bytes,
+    )
     renderer = _FriendlyEventRenderer()
     tool_calls = _ToolCallCoordinator(conn, config)
+    echo_canceller = (
+        SpeexEchoCanceller(
+            sample_rate=config.send_rate,
+            callback_frames=config.chunk_size,
+            frame_ms=config.echo_cancel_frame_ms,
+            filter_ms=config.echo_cancel_filter_ms,
+        )
+        if config.echo_cancel
+        else None
+    )
+    if echo_canceller is not None:
+        logger.info(
+            "Acoustic echo cancellation enabled engine=speexdsp rate=%d callback_frames=%d "
+            "aec_frame_ms=%d filter_ms=%d",
+            config.send_rate,
+            config.chunk_size,
+            config.echo_cancel_frame_ms,
+            config.echo_cancel_filter_ms,
+        )
+    aec_calls = 0
+    aec_total_ms = 0.0
+    aec_max_ms = 0.0
+    aec_dropped = 0
+    aec_errors = 0
+    aec_send_errors = 0
+    aec_shutdown_rejected = 0
+    duplex_status_blocks = 0
+    raw_calls = 0
 
     def callback_recv(outdata: Any, _frames: int, _time_info: Any, status: Any) -> None:
         if status:
@@ -854,23 +995,112 @@ async def _run_audio_session(
             logger.warning("Microphone status: %s", status)
         if config.block_mic_during_playback and playback.is_active():
             return
+        chunk = bytes(indata)
         try:
-            mic_queue.put_nowait(bytes(indata))
+            mic_queue.put_nowait(chunk)
         except Full:
             logger.debug("Dropping local microphone chunk because the send queue is full")
 
+    def callback_duplex(
+        indata: Any,
+        outdata: Any,
+        _frames: int,
+        _time_info: Any,
+        status: Any,
+    ) -> None:
+        nonlocal aec_dropped
+        tts_active = playback.write(outdata)
+        if not aec_ring.write(
+            outdata,
+            indata,
+            tts_active=tts_active,
+            status=bool(status),
+        ):
+            aec_dropped += 1
+
     async def send_audio() -> None:
+        nonlocal aec_calls, aec_errors, aec_max_ms, aec_send_errors
+        nonlocal aec_shutdown_rejected, aec_total_ms, duplex_status_blocks, raw_calls
+        previous_route: str | None = None
+        reported_drops = 0
+        tail_blocks = ceil(
+            config.echo_cancel_filter_ms * config.send_rate / (1000 * config.chunk_size)
+        )
+        tail_remaining = 0
         while not stop_event.is_set():
             try:
-                chunk = await asyncio.to_thread(mic_queue.get, True, 0.1)
+                if echo_canceller is None:
+                    chunk = await asyncio.to_thread(mic_queue.get, True, 0.1)
+                    route = "raw"
+                else:
+                    item = aec_ring.read()
+                    if item is None:
+                        await asyncio.sleep(0.002)
+                        continue
+                    playback_chunk, capture_chunk, tts_active, callback_status = item
+                    if callback_status:
+                        duplex_status_blocks += 1
+                        logger.warning("Audio callback reported a full-duplex device status")
+                    if tts_active:
+                        tail_remaining = tail_blocks
+                        route = "aec"
+                    elif tail_remaining:
+                        tail_remaining -= 1
+                        route = "aec"
+                    else:
+                        route = "raw"
             except Empty:
                 continue
-            await conn.send(
-                {
-                    "type": "input_audio_buffer.append",
-                    "audio": base64.b64encode(chunk).decode("ascii"),
-                }
-            )
+            if aec_dropped > reported_drops:
+                logger.warning(
+                    "Audio rejected reason=queue_full blocks=%d",
+                    aec_dropped - reported_drops,
+                )
+                reported_drops = aec_dropped
+            if route != previous_route:
+                logger.info(
+                    "Audio route changed route=%s reason=%s",
+                    route,
+                    "tts_overlap" if route == "aec" else "no_tts_playback",
+                )
+                previous_route = route
+            if echo_canceller is not None and route == "aec":
+                started = time.perf_counter()
+                try:
+                    chunk = echo_canceller.process_duplex(playback_chunk, capture_chunk)
+                except Exception as exc:
+                    aec_errors += 1
+                    logger.error("Audio rejected reason=aec_error error_type=%s", type(exc).__name__)
+                    raise
+                processed_aec_ms = (time.perf_counter() - started) * 1000
+            else:
+                chunk = capture_chunk if echo_canceller is not None else chunk
+                processed_aec_ms = None
+            try:
+                await conn.send(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(chunk).decode("ascii"),
+                    }
+                )
+            except asyncio.CancelledError:
+                aec_shutdown_rejected += 1
+                raise
+            except Exception as exc:
+                aec_send_errors += 1
+                logger.error(
+                    "Audio rejected reason=send_error error_type=%s",
+                    type(exc).__name__,
+                )
+                raise
+            else:
+                if route == "aec":
+                    aec_calls += 1
+                    assert processed_aec_ms is not None
+                    aec_total_ms += processed_aec_ms
+                    aec_max_ms = max(aec_max_ms, processed_aec_ms)
+                else:
+                    raw_calls += 1
 
     async def receive_events() -> None:
         while not stop_event.is_set():
@@ -886,24 +1116,35 @@ async def _run_audio_session(
     opened_streams: list[Any] = []
     started_streams: list[Any] = []
     try:
-        input_stream = sd.RawInputStream(
-            samplerate=config.send_rate,
-            channels=1,
-            dtype="int16",
-            blocksize=config.chunk_size,
-            callback=callback_send,
-            device=config.input_device,
-        )
-        opened_streams.append(input_stream)
-        output_stream = sd.RawOutputStream(
-            samplerate=config.recv_rate,
-            channels=1,
-            dtype="int16",
-            blocksize=config.chunk_size,
-            callback=callback_recv,
-            device=config.output_device,
-        )
-        opened_streams.append(output_stream)
+        if echo_canceller is not None:
+            duplex_stream = sd.RawStream(
+                samplerate=config.send_rate,
+                channels=1,
+                dtype="int16",
+                blocksize=config.chunk_size,
+                callback=callback_duplex,
+                device=(config.input_device, config.output_device),
+            )
+            opened_streams.append(duplex_stream)
+        else:
+            input_stream = sd.RawInputStream(
+                samplerate=config.send_rate,
+                channels=1,
+                dtype="int16",
+                blocksize=config.chunk_size,
+                callback=callback_send,
+                device=config.input_device,
+            )
+            opened_streams.append(input_stream)
+            output_stream = sd.RawOutputStream(
+                samplerate=config.recv_rate,
+                channels=1,
+                dtype="int16",
+                blocksize=config.chunk_size,
+                callback=callback_recv,
+                device=config.output_device,
+            )
+            opened_streams.append(output_stream)
 
         for stream in opened_streams:
             stream.start()
@@ -939,6 +1180,23 @@ async def _run_audio_session(
                 stream.close()
             except Exception:
                 logger.exception("Failed to close local audio stream")
+        if echo_canceller is not None:
+            aec_shutdown_rejected += aec_ring.discard_all()
+            echo_canceller.close()
+            logger.info(
+                "Audio routing stopped raw=%d aec=%d rejected_queue=%d rejected_aec=%d "
+                "rejected_send=%d rejected_shutdown=%d callback_status=%d "
+                "aec_avg_ms=%.3f aec_max_ms=%.3f",
+                raw_calls,
+                aec_calls,
+                aec_dropped,
+                aec_errors,
+                aec_send_errors,
+                aec_shutdown_rejected,
+                duplex_status_blocks,
+                aec_total_ms / aec_calls if aec_calls else 0.0,
+                aec_max_ms,
+            )
 
 
 async def listen_and_play_realtime(

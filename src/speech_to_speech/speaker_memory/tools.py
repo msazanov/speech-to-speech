@@ -72,6 +72,31 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "name": "speaker_memory_block_voice",
+        "description": "Ignore the current voice in future turns after the user explicitly identifies it as unwanted background audio.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "speaker_ref": _REFERENCE_PROPERTY,
+                "reason": {"type": "string", "minLength": 1, "maxLength": 80},
+            },
+            "required": ["speaker_ref", "reason"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "speaker_memory_unblock_voice",
+        "description": "Remove the current voice from the background-audio blacklist after an explicit correction.",
+        "parameters": {
+            "type": "object",
+            "properties": {"speaker_ref": _REFERENCE_PROPERTY},
+            "required": ["speaker_ref"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
         "name": "speaker_memory_remember_fact",
         "description": "Remember a personal fact explicitly stated by the confirmed current speaker.",
         "parameters": {
@@ -202,6 +227,27 @@ def _execute(
                 conversation_id=conversation_id,
             )
             create_response = False
+        elif name == "speaker_memory_block_voice":
+            voice_id = service.set_voice_blocked(
+                speaker_ref,
+                blocked=True,
+                reason=_required_string(arguments, "reason"),
+                conversation_id=conversation_id,
+            )
+            return ToolResult(
+                output={"ok": True, "voice_id": voice_id, "blocked": True},
+                create_response=False,
+            )
+        elif name == "speaker_memory_unblock_voice":
+            voice_id = service.set_voice_blocked(
+                speaker_ref,
+                blocked=False,
+                conversation_id=conversation_id,
+            )
+            return ToolResult(
+                output={"ok": True, "voice_id": voice_id, "blocked": False},
+                create_response=False,
+            )
         elif name == "speaker_memory_remember_fact":
             fact = service.remember_fact(
                 speaker_ref,

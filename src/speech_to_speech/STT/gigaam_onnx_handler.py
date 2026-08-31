@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 from typing import Any, Iterator
 
 import numpy as np
@@ -74,12 +75,26 @@ class GigaAMONNXSTTHandler(BaseSTTHandler):
 
     def process(self, vad_audio: STTIn) -> Iterator[STTOut]:
         audio = np.asarray(vad_audio.audio, dtype=np.float32).reshape(-1)
+        started = perf_counter()
         pred_text = str(self.model.recognize(audio, sample_rate=PIPELINE_SAMPLE_RATE)).strip()
+        elapsed_ms = (perf_counter() - started) * 1000
         if not pred_text:
-            logger.debug("GigaAM ONNX returned an empty transcription")
+            logger.info(
+                "Audio rejected reason=no_speech backend=gigaam stt_ms=%.1f audio_ms=%.1f",
+                elapsed_ms,
+                audio.size * 1000 / PIPELINE_SAMPLE_RATE,
+            )
             return
 
-        logger.debug("GigaAM ONNX transcription: %s", transcript_for_log(pred_text))
+        language_code = self._language_code(pred_text)
+        logger.info(
+            "STT completed backend=gigaam mode=%s language=%s stt_ms=%.1f audio_ms=%.1f text=%s",
+            vad_audio.mode or "final",
+            language_code,
+            elapsed_ms,
+            audio.size * 1000 / PIPELINE_SAMPLE_RATE,
+            transcript_for_log(pred_text),
+        )
         if vad_audio.mode == "progressive":
             yield PartialTranscription(
                 text=pred_text,
@@ -90,7 +105,7 @@ class GigaAMONNXSTTHandler(BaseSTTHandler):
 
         yield Transcription(
             text=pred_text,
-            language_code=self._language_code(pred_text),
+            language_code=language_code,
             turn_id=vad_audio.turn_id,
             turn_revision=vad_audio.turn_revision,
             speech_stopped_at_s=vad_audio.created_at_s,
