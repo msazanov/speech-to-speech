@@ -370,8 +370,9 @@ def _build_speaker_memory_handler(
 
     from speech_to_speech.speaker_memory.extractor import SherpaOnnxSpeakerEmbeddingExtractor
     from speech_to_speech.speaker_memory.handler import SpeakerMemoryHandler
+    from speech_to_speech.speaker_memory.service import SpeakerMemoryService
     from speech_to_speech.speaker_memory.store import SpeakerMemoryStore
-    from speech_to_speech.speaker_memory.tracker import SpeakerMemoryService, SpeakerTracker
+    from speech_to_speech.speaker_memory.tracker import SpeakerTracker
 
     database_path = arguments.speaker_memory_database_path or _default_speaker_memory_database_path()
     store = SpeakerMemoryStore(database_path)
@@ -675,6 +676,38 @@ def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadMana
     if local_audio.local_audio_tool_module:
         tools, tool_executor, tool_response_create = load_realtime_tool_module(local_audio.local_audio_tool_module)
     server_manager = build_pipeline(args, stop_event, host="127.0.0.1")
+    speaker_handler = next(
+        (
+            handler
+            for handler in server_manager.handlers
+            if hasattr(handler, "service") and hasattr(handler, "conversation_id")
+        ),
+        None,
+    )
+    if speaker_handler is not None:
+        from speech_to_speech.speaker_memory.tools import TOOLS as SPEAKER_MEMORY_TOOLS
+        from speech_to_speech.speaker_memory.tools import create_tool_executor
+
+        speaker_executor = create_tool_executor(
+            speaker_handler.service,
+            conversation_id_provider=lambda: speaker_handler.conversation_id,
+        )
+        existing_names = {tool["name"] for tool in tools}
+        speaker_names = {tool["name"] for tool in SPEAKER_MEMORY_TOOLS}
+        duplicate_names = existing_names & speaker_names
+        if duplicate_names:
+            raise ValueError(f"Duplicate local speaker-memory tool names: {sorted(duplicate_names)}")
+        previous_executor = tool_executor
+
+        async def combined_tool_executor(name: str, arguments: dict[str, Any]) -> Any:
+            if name in speaker_names:
+                return await speaker_executor(name, arguments)
+            if previous_executor is None:
+                raise ValueError(f"unknown local tool: {name}")
+            return await previous_executor(name, arguments)
+
+        tools = [*tools, *SPEAKER_MEMORY_TOOLS]
+        tool_executor = combined_tool_executor
     client = RealtimeAudioClient(
         stop_event,
         RealtimeAudioClientConfig(

@@ -72,6 +72,7 @@ from speech_to_speech.pipeline.messages import GenerateResponseRequest
 from speech_to_speech.pipeline.queue_types import TextPromptItem
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 from speech_to_speech.pipeline.transcript_logging import log_exception, transcript_for_log
+from speech_to_speech.speaker_memory.context import add_speaker_context
 from speech_to_speech.utils.utils import _generate_id
 
 logger = logging.getLogger(__name__)
@@ -647,14 +648,15 @@ class RealtimeService:
 
         cfg = st.runtime_config
         transcript = event.transcript
+        llm_transcript = add_speaker_context(transcript, event.speaker)
         if transcript:
             if same_speculative_turn and st.speculative_user_item_id:
-                replaced = cfg.chat.replace_user_message_text(st.speculative_user_item_id, transcript)
+                replaced = cfg.chat.replace_user_message_text(st.speculative_user_item_id, llm_transcript)
                 if not replaced:
-                    item = cfg.chat.add_item(make_user_message(transcript))
+                    item = cfg.chat.add_item(make_user_message(llm_transcript))
                     st.speculative_user_item_id = item.id
             else:
-                item = cfg.chat.add_item(make_user_message(transcript))
+                item = cfg.chat.add_item(make_user_message(llm_transcript))
                 st.speculative_user_item_id = item.id
         elif same_speculative_turn and st.speculative_user_item_id:
             cfg.chat.remove_user_message(st.speculative_user_item_id)
