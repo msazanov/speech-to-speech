@@ -760,6 +760,8 @@ class RealtimeService:
                 turn_id=event.turn_id,
                 turn_revision=event.turn_revision,
                 speech_stopped_at_s=event.speech_stopped_at_s,
+                speaker_ref=event.speaker.speaker_ref if event.speaker is not None else None,
+                speaker=event.speaker,
             )
             st.mark_response_pending(request.response_key)
             queue.put(request)

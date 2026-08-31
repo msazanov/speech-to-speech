@@ -3923,6 +3923,11 @@ class TestDispatchPipelineEvent:
                 audio_duration_s=2.5,
                 turn_id="turn_1",
                 turn_revision=0,
+                speaker=SpeakerAttribution(
+                    voice_id="v_direct",
+                    speaker_ref="sr_direct",
+                    state=SpeakerState.UNKNOWN,
+                ),
             ),
         )
 
@@ -3941,6 +3946,9 @@ class TestDispatchPipelineEvent:
         assert request.audio_sample_rate == 16000
         assert request.turn_id == "turn_1"
         assert request.turn_revision == 0
+        assert request.speaker_ref == "sr_direct"
+        assert request.speaker is not None
+        assert request.speaker.voice_id == "v_direct"
 
         service.response._ensure_response(conn_id)
         assert state.input_audio_duration_s == 0.0

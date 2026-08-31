@@ -59,6 +59,7 @@ from speech_to_speech.pipeline.messages import (
 )
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 from speech_to_speech.pipeline.transcript_logging import log_exception, structured_for_log, transcript_for_log
+from speech_to_speech.speaker_memory.context import format_speaker_context
 from speech_to_speech.utils.utils import is_out_of_band, response_wants_audio
 
 logger = logging.getLogger(__name__)
@@ -1170,6 +1171,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             if response is not None and response.instructions is not None
             else runtime_config.session.instructions
         ) or ""
+        if request.speaker is not None:
+            # Direct-audio turns have no transcript message where the text path
+            # can prepend identity metadata. Keep the same bounded trusted
+            # context in the system prompt so every LLM request is speaker-aware.
+            speaker_context = format_speaker_context(request.speaker)
+            instructions = f"{instructions}\n{speaker_context}" if instructions else speaker_context
         req_tools = (
             response.tools if response is not None and response.tools is not None else runtime_config.session.tools
         )

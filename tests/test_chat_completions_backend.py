@@ -49,6 +49,7 @@ from speech_to_speech.pipeline.messages import (
     TTSInput,
 )
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+from speech_to_speech.speaker_memory.models import SpeakerAttribution, SpeakerState
 
 # ── Fakes ────────────────────────────────────────────────────────────────────
 
@@ -408,12 +409,18 @@ def test_chat_completions_backend_processes_audio_without_responses_api():
                 runtime_config=cfg,
                 audio=np.zeros(1600, dtype=np.float32),
                 audio_sample_rate=16000,
+                speaker=SpeakerAttribution(
+                    voice_id="v_direct",
+                    speaker_ref="sr_direct",
+                    state=SpeakerState.UNKNOWN,
+                ),
             )
         )
     )
 
     captured = handler.client.chat.completions.last_kwargs
     assert captured["messages"][-1]["content"][0]["type"] == "input_audio"
+    assert "sr_direct" in json.dumps(captured["messages"], ensure_ascii=False)
     assert captured["max_tokens"] == 256
     assert captured["temperature"] == 0.0
     assert any(isinstance(output, LLMResponseChunk) and output.text == "I heard you." for output in outputs)

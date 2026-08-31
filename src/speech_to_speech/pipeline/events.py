@@ -99,6 +99,10 @@ class AudioInputCompletedEvent(PipelineEvent):
     turn_id: str | None = None
     turn_revision: int | None = None
     speech_stopped_at_s: float | None = Field(default=None, exclude=True)
+    # Internal-only attribution from the speaker-memory stage. The realtime
+    # wire event exposes only the redacted public identity; the LLM bridge uses
+    # this trusted value to inject context and complete memory tool calls.
+    speaker: SpeakerAttribution | None = Field(default=None, exclude=True, repr=False)
 
 
 # ── LLM output events (LMOutputProcessor) ────────────────────────────

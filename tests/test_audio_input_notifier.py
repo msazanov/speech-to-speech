@@ -8,6 +8,7 @@ from speech_to_speech.LLM.audio_input_notifier import AudioInputNotifier
 from speech_to_speech.pipeline.events import AudioInputCompletedEvent
 from speech_to_speech.pipeline.messages import VADAudio
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+from speech_to_speech.speaker_memory.models import SpeakerAttribution, SpeakerState
 
 
 def _notifier(
@@ -66,6 +67,11 @@ def test_audio_input_notifier_routes_final_audio_through_realtime_service_queue(
                 mode="final",
                 turn_id="turn_1",
                 turn_revision=2,
+                speaker=SpeakerAttribution(
+                    voice_id="v_direct",
+                    speaker_ref="sr_direct",
+                    state=SpeakerState.UNKNOWN,
+                ),
             )
         )
     )
@@ -78,3 +84,5 @@ def test_audio_input_notifier_routes_final_audio_through_realtime_service_queue(
     assert event.audio_duration_s == 2.5
     assert event.turn_id == "turn_1"
     assert event.turn_revision == 2
+    assert event.speaker is not None
+    assert event.speaker.speaker_ref == "sr_direct"
