@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from .models import PersonCandidate, SpeakerAttribution, SpeakerState
+from .models import PersonalFact, PersonCandidate, SpeakerAttribution, SpeakerState
 from .store import SpeakerMemoryStore
+
+
+class IdentityNotConfirmed(PermissionError):
+    """Private memory is unavailable until identity evidence is decisive."""
 
 
 class SpeakerMemoryService:
@@ -13,6 +17,8 @@ class SpeakerMemoryService:
     _CONFIRM_WEIGHT = 2.0
     _REJECT_WEIGHT = -1.0
     _MAX_NAME_LENGTH = 80
+    _MAX_FACT_LENGTH = 500
+    _MAX_TOPIC_LENGTH = 80
 
     def __init__(
         self,
@@ -68,6 +74,61 @@ class SpeakerMemoryService:
             kind="agent_rejection",
             weight=self._REJECT_WEIGHT,
         )
+
+    def remember_fact(
+        self,
+        speaker_ref: str,
+        fact: str,
+        *,
+        topic: str | None = None,
+        conversation_id: str,
+    ) -> PersonalFact:
+        person_id = self._require_confirmed_person(speaker_ref, conversation_id=conversation_id)
+        normalized_fact = " ".join(fact.split())
+        normalized_topic = " ".join(topic.split()) if topic is not None else None
+        if not normalized_fact or len(normalized_fact) > self._MAX_FACT_LENGTH:
+            raise ValueError(f"fact must contain 1 to {self._MAX_FACT_LENGTH} characters")
+        if normalized_topic is not None and len(normalized_topic) > self._MAX_TOPIC_LENGTH:
+            raise ValueError(f"topic must contain at most {self._MAX_TOPIC_LENGTH} characters")
+        return self.store.add_personal_fact(person_id, normalized_fact, topic=normalized_topic or None)
+
+    def recall(
+        self,
+        speaker_ref: str,
+        *,
+        query: str,
+        limit: int = 5,
+        conversation_id: str,
+    ) -> list[PersonalFact]:
+        person_id = self._require_confirmed_person(speaker_ref, conversation_id=conversation_id)
+        if not 1 <= limit <= 20:
+            raise ValueError("recall limit must be between 1 and 20")
+        return self.store.search_personal_facts(person_id, query, limit=limit)
+
+    def forget(
+        self,
+        speaker_ref: str,
+        *,
+        scope: str,
+        fact_id: str | None = None,
+        conversation_id: str,
+    ) -> int:
+        person_id = self._require_confirmed_person(speaker_ref, conversation_id=conversation_id)
+        if scope == "fact":
+            if not fact_id:
+                raise ValueError("fact_id is required when scope is 'fact'")
+            return self.store.delete_personal_facts(person_id, fact_id=fact_id)
+        if scope == "facts":
+            if fact_id is not None:
+                raise ValueError("fact_id is not accepted when scope is 'facts'")
+            return self.store.delete_personal_facts(person_id)
+        raise ValueError("scope must be 'fact' or 'facts'")
+
+    def _require_confirmed_person(self, speaker_ref: str, *, conversation_id: str) -> str:
+        attribution = self.inspect(speaker_ref, conversation_id=conversation_id)
+        if attribution.state is not SpeakerState.KNOWN or attribution.candidate is None:
+            raise IdentityNotConfirmed("speaker identity is not confirmed")
+        return attribution.candidate.person_id
 
     def _record_decision(
         self,

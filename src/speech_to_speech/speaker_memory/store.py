@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 import sqlite3
 import threading
@@ -15,6 +16,7 @@ from .models import (
     ExpiredSpeakerReference,
     InvalidEmbedding,
     Person,
+    PersonalFact,
     PersonCandidate,
     SpeakerObservation,
     SpeakerReference,
@@ -39,7 +41,7 @@ def normalize_embedding(embedding: np.ndarray) -> np.ndarray:
 class SpeakerMemoryStore:
     """Small synchronous store intended for one in-process pipeline."""
 
-    _SCHEMA_VERSION = 1
+    _SCHEMA_VERSION = 2
 
     def __init__(
         self,
@@ -64,6 +66,7 @@ class SpeakerMemoryStore:
             self._connection.execute("PRAGMA foreign_keys=ON")
             self._connection.execute(f"PRAGMA busy_timeout={int(timeout_s * 1000)}")
             self._migrate()
+            self._fts_enabled = self._initialize_fact_search()
 
     def _migrate(self) -> None:
         self._connection.executescript(
@@ -116,14 +119,41 @@ class SpeakerMemoryStore:
             );
             CREATE INDEX IF NOT EXISTS voice_person_evidence_lookup_idx
                 ON voice_person_evidence(voice_id, person_id, created_at);
+            CREATE TABLE IF NOT EXISTS personal_facts (
+                id TEXT PRIMARY KEY,
+                person_id TEXT NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+                topic TEXT,
+                fact TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS personal_facts_person_idx
+                ON personal_facts(person_id, updated_at DESC);
             COMMIT;
             """
         )
         row = self._connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
         if row is None:
             self._connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (self._SCHEMA_VERSION,))
+        elif row["version"] == 1:
+            self._connection.execute("UPDATE schema_meta SET version = ?", (self._SCHEMA_VERSION,))
         elif row["version"] != self._SCHEMA_VERSION:
             raise RuntimeError(f"unsupported speaker-memory schema version: {row['version']}")
+
+    def _initialize_fact_search(self) -> bool:
+        try:
+            self._connection.execute(
+                """CREATE VIRTUAL TABLE IF NOT EXISTS personal_facts_fts USING fts5(
+                       fact_id UNINDEXED,
+                       person_id UNINDEXED,
+                       topic,
+                       fact,
+                       tokenize='unicode61'
+                   )"""
+            )
+        except sqlite3.OperationalError:
+            return False
+        return True
 
     @staticmethod
     def _id(prefix: str) -> str:
@@ -351,6 +381,97 @@ class SpeakerMemoryStore:
             )
             for row in rows
         ]
+
+    @staticmethod
+    def _fact_from_row(row: sqlite3.Row) -> PersonalFact:
+        return PersonalFact(
+            id=row["id"],
+            person_id=row["person_id"],
+            topic=row["topic"],
+            fact=row["fact"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def add_personal_fact(self, person_id: str, fact: str, *, topic: str | None = None) -> PersonalFact:
+        fact_id = self._id("f")
+        now = self.clock()
+        with self._lock, self._connection:
+            self._connection.execute(
+                """INSERT INTO personal_facts(id, person_id, topic, fact, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (fact_id, person_id, topic, fact, now, now),
+            )
+            if self._fts_enabled:
+                self._connection.execute(
+                    "INSERT INTO personal_facts_fts(fact_id, person_id, topic, fact) VALUES (?, ?, ?, ?)",
+                    (fact_id, person_id, topic or "", fact),
+                )
+        return PersonalFact(
+            id=fact_id,
+            person_id=person_id,
+            topic=topic,
+            fact=fact,
+            created_at=now,
+            updated_at=now,
+        )
+
+    def search_personal_facts(self, person_id: str, query: str, *, limit: int = 5) -> list[PersonalFact]:
+        tokens = re.findall(r"[^\W_]+", query.casefold(), flags=re.UNICODE)
+        if not tokens:
+            return []
+        with self._lock:
+            if self._fts_enabled:
+                expression = " AND ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens)
+                rows = self._connection.execute(
+                    """SELECT f.*
+                       FROM personal_facts_fts AS search
+                       JOIN personal_facts AS f ON f.id = search.fact_id
+                       WHERE personal_facts_fts MATCH ? AND search.person_id = ?
+                       ORDER BY bm25(personal_facts_fts), f.updated_at DESC, f.id
+                       LIMIT ?""",
+                    (expression, person_id, limit),
+                ).fetchall()
+            else:
+                clauses = " AND ".join("(LOWER(fact) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(topic, '')) LIKE ? ESCAPE '\\')" for _ in tokens)
+                parameters: list[object] = []
+                for token in tokens:
+                    escaped = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                    parameters.extend((f"%{escaped}%", f"%{escaped}%"))
+                parameters.extend((person_id, limit))
+                rows = self._connection.execute(
+                    f"""SELECT * FROM personal_facts
+                        WHERE {clauses} AND person_id = ?
+                        ORDER BY updated_at DESC, id
+                        LIMIT ?""",
+                    parameters,
+                ).fetchall()
+        return [self._fact_from_row(row) for row in rows]
+
+    def delete_personal_facts(self, person_id: str, *, fact_id: str | None = None) -> int:
+        with self._lock, self._connection:
+            if fact_id is None:
+                rows = self._connection.execute(
+                    "SELECT id FROM personal_facts WHERE person_id = ?", (person_id,)
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    "SELECT id FROM personal_facts WHERE person_id = ? AND id = ?", (person_id, fact_id)
+                ).fetchall()
+            ids = [row["id"] for row in rows]
+            if not ids:
+                return 0
+            placeholders = ",".join("?" for _ in ids)
+            if self._fts_enabled:
+                self._connection.execute(
+                    f"DELETE FROM personal_facts_fts WHERE fact_id IN ({placeholders})",
+                    ids,
+                )
+            self._connection.execute(
+                f"DELETE FROM personal_facts WHERE id IN ({placeholders})",
+                ids,
+            )
+        return len(ids)
 
     def close(self) -> None:
         with self._lock:

@@ -95,6 +95,17 @@ class PersonCandidate(BaseModel):
     evidence_score: float
 
 
+class PersonalFact(BaseModel):
+    """One private fact attached to a confirmed person, never to a voice."""
+
+    id: str
+    person_id: str
+    fact: str
+    topic: str | None = None
+    created_at: float
+    updated_at: float
+
+
 class SpeakerAttribution(BaseModel):
     """Compact identity state attached to an internal pipeline message."""
 

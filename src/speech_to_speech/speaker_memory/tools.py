@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .models import SpeakerReferenceError
-from .service import SpeakerMemoryService
+from .service import IdentityNotConfirmed, SpeakerMemoryService
 
 CREATE_RESPONSE = True
 
@@ -66,6 +66,51 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {"speaker_ref": _REFERENCE_PROPERTY, "person_id": _PERSON_PROPERTY},
             "required": ["speaker_ref", "person_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "speaker_memory_remember_fact",
+        "description": "Remember a personal fact explicitly stated by the confirmed current speaker.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "speaker_ref": _REFERENCE_PROPERTY,
+                "fact": {"type": "string", "minLength": 1, "maxLength": 500},
+                "topic": {"type": "string", "minLength": 1, "maxLength": 80},
+            },
+            "required": ["speaker_ref", "fact"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "speaker_memory_recall",
+        "description": "Recall relevant private facts only for a confirmed current speaker.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "speaker_ref": _REFERENCE_PROPERTY,
+                "query": {"type": "string", "minLength": 1, "maxLength": 200},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+            },
+            "required": ["speaker_ref", "query"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "speaker_memory_forget",
+        "description": "Forget one fact or all facts after an explicit request from the confirmed speaker.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "speaker_ref": _REFERENCE_PROPERTY,
+                "scope": {"type": "string", "enum": ["fact", "facts"]},
+                "fact_id": {"type": "string", "minLength": 3},
+            },
+            "required": ["speaker_ref", "scope"],
             "additionalProperties": False,
         },
     },
@@ -140,8 +185,43 @@ def _execute(
                 conversation_id=conversation_id,
             )
             create_response = False
+        elif name == "speaker_memory_remember_fact":
+            fact = service.remember_fact(
+                speaker_ref,
+                _required_string(arguments, "fact"),
+                topic=arguments.get("topic"),
+                conversation_id=conversation_id,
+            )
+            return ToolResult(
+                output={"ok": True, "fact": fact.model_dump(mode="json")},
+                create_response=False,
+            )
+        elif name == "speaker_memory_recall":
+            facts = service.recall(
+                speaker_ref,
+                query=_required_string(arguments, "query"),
+                limit=arguments.get("limit", 5),
+                conversation_id=conversation_id,
+            )
+            return ToolResult(
+                output={"ok": True, "facts": [fact.model_dump(mode="json") for fact in facts]},
+                create_response=True,
+            )
+        elif name == "speaker_memory_forget":
+            deleted = service.forget(
+                speaker_ref,
+                scope=_required_string(arguments, "scope"),
+                fact_id=arguments.get("fact_id"),
+                conversation_id=conversation_id,
+            )
+            return ToolResult(output={"ok": True, "deleted": deleted}, create_response=False)
         else:
             raise ValueError(f"unknown speaker memory tool: {name}")
+    except IdentityNotConfirmed:
+        return ToolResult(
+            output={"ok": False, "error": "identity_not_confirmed", "recommendation": "clarify"},
+            create_response=True,
+        )
     except SpeakerReferenceError:
         return ToolResult(
             output={"ok": False, "error": "speaker_reference_invalid", "recommendation": "clarify"},

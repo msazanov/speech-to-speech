@@ -565,6 +565,10 @@ def _build_pipeline_unit(
 
     chat_size = llm_selection.config.get("chat_size", 10)
     default_instructions = llm_selection.config.get("init_chat_prompt")
+    if speaker_memory_kwargs.speaker_memory_enabled:
+        from speech_to_speech.speaker_memory.policy import SPEAKER_MEMORY_POLICY
+
+        default_instructions = "\n\n".join(part for part in (default_instructions, SPEAKER_MEMORY_POLICY) if part)
 
     service = RealtimeService(
         text_prompt_queue=text_prompt_queue,
