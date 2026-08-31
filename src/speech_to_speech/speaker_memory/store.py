@@ -660,6 +660,19 @@ class SpeakerMemoryStore:
             ).fetchone()
         return row is not None
 
+    def resolve_reference_candidates(self, reference: str) -> list[PersonCandidate]:
+        """Return candidates explicitly attached to a short-lived reference."""
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT p.id AS person_id, p.display_name
+                   FROM speaker_reference_candidates AS c
+                   JOIN persons AS p ON p.id = c.person_id
+                   WHERE c.ref = ?
+                   ORDER BY c.created_at, c.person_id""",
+                (reference,),
+            ).fetchall()
+        return [PersonCandidate(person_id=row["person_id"], name=row["display_name"], evidence_score=0.0) for row in rows]
+
     def prune_expired(self) -> dict[str, int]:
         now = self.clock()
         cutoff = now - self.observation_retention_days * 86400

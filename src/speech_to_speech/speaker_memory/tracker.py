@@ -24,9 +24,12 @@ class SpeakerTracker:
         reference_ttl_s: float = 300.0,
         identity_threshold: float = 2.0,
         identity_margin: float = 0.75,
+        group_threshold: float = 0.55,
     ) -> None:
         if not 0 <= candidate_threshold <= match_threshold <= 1:
             raise ValueError("voice thresholds must satisfy 0 <= candidate <= match <= 1")
+        if not 0 <= group_threshold <= candidate_threshold:
+            raise ValueError("voice group threshold must satisfy 0 <= group <= candidate")
         self.store = store
         self.match_threshold = match_threshold
         self.candidate_threshold = candidate_threshold
@@ -35,6 +38,7 @@ class SpeakerTracker:
         self.reference_ttl_s = reference_ttl_s
         self.identity_threshold = identity_threshold
         self.identity_margin = identity_margin
+        self.group_threshold = group_threshold
 
     def observe(
         self,
@@ -65,16 +69,18 @@ class SpeakerTracker:
         top_score = scored[0][1] if scored else -1.0
         runner_up = scored[1][1] if len(scored) > 1 else -1.0
         voice_margin = top_score - runner_up
-
         if not scored or top_score < self.candidate_threshold:
             voice = self.store.create_voice_cluster(vector, quality=quality)
+            group_candidate = self._group_candidate(vector, excluded_voice_id=voice.id)
             acoustic_state = SpeakerState.UNKNOWN
             reported_margin: float | None = None
         elif top_score < self.match_threshold or voice_margin < self.ambiguity_margin:
             voice = scored[0][0]
+            group_candidate = None
             acoustic_state = SpeakerState.AMBIGUOUS
             reported_margin = voice_margin
         else:
+            group_candidate = None
             if self.store.is_voice_blocked(scored[0][0].id):
                 return SpeakerAttribution(
                     voice_id=scored[0][0].id,
@@ -106,7 +112,12 @@ class SpeakerTracker:
             recommendation = "clarify"
         else:
             state, candidate = self._identity_state(voice.id)
-            recommendation = "clarify" if state is SpeakerState.CONFLICT else "none"
+            if candidate is None and group_candidate is not None:
+                # Acoustic grouping is a suggestion only. It never silently
+                # merges clusters or grants access to personal facts.
+                state, candidate, recommendation = SpeakerState.CONFLICT, group_candidate, "clarify"
+            else:
+                recommendation = "clarify" if state is SpeakerState.CONFLICT else "none"
 
         if candidate is not None:
             self.store.bind_reference_candidate(reference, candidate.person_id)
@@ -124,6 +135,24 @@ class SpeakerTracker:
     def _top_candidate(self, voice_id: str) -> PersonCandidate | None:
         candidates = self.store.resolve_person_candidates(voice_id)
         return candidates[0] if candidates else None
+
+    def _group_candidate(self, vector: np.ndarray, *, excluded_voice_id: str | None) -> PersonCandidate | None:
+        """Suggest a person from a nearby cluster without merging voice IDs."""
+        best: tuple[float, PersonCandidate] | None = None
+        for cluster in self.store.get_voice_clusters():
+            if cluster.id == excluded_voice_id or cluster.centroid.size != vector.size:
+                continue
+            similarity = float(np.dot(vector, cluster.centroid))
+            if similarity < self.group_threshold:
+                continue
+            candidates = self.store.resolve_person_candidates(cluster.id)
+            if not candidates:
+                continue
+            candidate = candidates[0]
+            score = similarity * max(0.1, candidate.evidence_score)
+            if best is None or score > best[0]:
+                best = (score, candidate)
+        return best[1] if best is not None else None
 
     def _identity_state(self, voice_id: str) -> tuple[SpeakerState, PersonCandidate | None]:
         candidates = self.store.resolve_person_candidates(voice_id)

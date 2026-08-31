@@ -25,7 +25,7 @@ const EMPTY_STATE_HTML = `<div id="chat-empty" class="chat-empty">${CHAT_BUBBLE_
 /** @param {{ voice_id?: string, state?: string, person?: { name?: string } } | null | undefined} speaker */
 export function speakerDisplayLabel(speaker) {
   if (speaker?.state === "known" && speaker.person?.name) return speaker.person.name;
-  return speaker?.voice_id || "Voice…";
+  return speaker?.voice_id || "Unknown voice";
 }
 
 /** @param {string | null | undefined} voiceId */
@@ -37,6 +37,11 @@ export function speakerDisplayColor(voiceId) {
     hash = Math.imul(hash, 16777619);
   }
   return `hsl(${Math.abs(hash) % 360} 78% 66%)`;
+}
+
+/** @param {{ voice_id?: string, person?: { person_id?: string } } | null | undefined} speaker */
+export function speakerIdentityColorKey(speaker) {
+  return speaker?.person?.person_id || speaker?.voice_id || "unknown";
 }
 
 export class ChatView {
@@ -150,7 +155,7 @@ export class ChatView {
   _buildMessageEl({ container, prefix, role, text, partial = false }) {
     const el = document.createElement("div");
     el.className = `${container} ${role}`;
-    const label = role === "user" ? "Voice…" : "Assistant";
+    const label = role === "user" ? "Unknown voice" : "Assistant";
     el.innerHTML = `<div class="${prefix}-role">${label}</div><div class="${prefix}-body${partial ? " partial" : ""}"${text ? "" : " hidden"}>${escHtml(text)}</div>`;
     return el;
   }
@@ -162,7 +167,7 @@ export class ChatView {
     if (!label) return;
     label.textContent = speakerDisplayLabel(speaker);
     label.title = `Speaker ${speaker.state || "unknown"}`;
-    const color = speakerDisplayColor(speaker.voice_id);
+    const color = speakerDisplayColor(speakerIdentityColorKey(speaker));
     if (color) label.style.color = color;
   }
 

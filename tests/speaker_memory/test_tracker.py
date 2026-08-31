@@ -172,3 +172,27 @@ def test_inspection_cannot_use_reference_from_another_conversation(store: Speake
 
     with pytest.raises(Exception, match="another conversation"):
         service.inspect(first.speaker_ref, conversation_id="conv_2")
+
+
+def test_similar_new_voice_gets_known_person_as_clarification_candidate(store: SpeakerMemoryStore) -> None:
+    memory_tracker = tracker(store, group_threshold=0.55)
+    first = observe(memory_tracker, unit([1.0, 0.0]), turn_id="turn_owner")
+    person = store.create_person("Михаил")
+    store.add_identity_evidence(first.voice_id, person.id, kind="self_introduction", weight=3.0)
+
+    # The sample is deliberately below the ordinary cluster threshold, so it
+    # becomes a second voice_id while still being close enough to propose the
+    # already-known person for explicit clarification.
+    second = observe(memory_tracker, unit([0.58, 0.815]), turn_id="turn_alias")
+
+    assert second.voice_id != first.voice_id
+    assert second.state is SpeakerState.CONFLICT
+    assert second.recommendation == "clarify"
+    assert second.candidate is not None
+    assert second.candidate.person_id == person.id
+    assert store.reference_allows_candidate(second.speaker_ref, person.id)
+
+    linked = SpeakerMemoryService(store).remember_name(second.speaker_ref, "Михаил", conversation_id="conv_1")
+    assert linked.candidate is not None
+    assert linked.candidate.person_id == person.id
+    assert len(store.get_voice_clusters()) == 2

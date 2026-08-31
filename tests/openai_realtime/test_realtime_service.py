@@ -305,6 +305,30 @@ class TestHandleSessionUpdate:
         assert runtime_config.session.tools is not None
         assert runtime_config.session.tool_choice == "required"
 
+    def test_session_update_prefills_current_prompt_and_tools(self, service, conn_id):
+        class Prefill:
+            def __init__(self):
+                self.calls = []
+
+            def prefill_session(self, instructions, tools, tool_choice):
+                self.calls.append((instructions, tools, tool_choice))
+
+        prefill = Prefill()
+        service.set_prefill_handler(prefill)
+        service.handle_session_update(
+            conn_id,
+            self._make_update(
+                instructions="Be concise",
+                tools=[{"type": "function", "name": "web_search"}],
+                tool_choice="auto",
+            ),
+        )
+
+        instructions, received_tools, choice = prefill.calls[0]
+        assert instructions == "Be concise"
+        assert received_tools[0].name == "web_search"
+        assert choice == "auto"
+
     def test_session_update_rejects_transcription_session(self, service, conn_id, runtime_config):
         raw = {
             "type": "session.update",
@@ -3866,6 +3890,37 @@ class TestDispatchPipelineEvent:
         payload = events[0].model_dump(mode="json", exclude_none=True)
         assert payload["speaker"] == {"voice_id": "v_browser", "state": "unknown"}
         assert "speaker_ref" not in json.dumps(payload)
+
+    def test_transcription_routes_explicit_memory_command_with_trusted_metadata(
+        self, service, conn_id, runtime_config, text_prompt_queue
+    ):
+        service.handle_session_update(
+            conn_id,
+            SessionUpdateEvent(
+                type="session.update",
+                session={
+                    "type": "realtime",
+                    "tools": [{"type": "function", "name": "speaker_memory_remember_name"}],
+                },
+            ),
+        )
+        service.dispatch_pipeline_event(conn_id, SpeechStartedEvent())
+        service.dispatch_pipeline_event(conn_id, SpeechStoppedEvent(duration_s=1.0))
+        service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(
+                transcript="Меня зовут Марат",
+                speaker=SpeakerAttribution(
+                    voice_id="v_browser", speaker_ref="sr_trusted", state=SpeakerState.UNKNOWN
+                ),
+            ),
+        )
+
+        request = text_prompt_queue.get_nowait()
+        assert request.forced_tool_call is not None
+        assert request.forced_tool_call.name == "speaker_memory_remember_name"
+        assert '"speaker_ref":"sr_trusted"' in request.forced_tool_call.arguments
+        assert "speaker_ref" in runtime_config.chat.buffer[-1].content[0].text
 
     def test_audio_input_completed_marks_response_pending_and_preserves_duration(
         self,

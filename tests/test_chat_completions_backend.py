@@ -131,6 +131,28 @@ def test_warmup_uses_request_scoped_sdk_retries():
     assert handler.client.last_options == {"max_retries": base_mod.WARMUP_MAX_RETRIES}
 
 
+def test_session_prefill_uses_current_prompt_and_tools_without_mutating_chat():
+    handler = _make_handler()
+    tools = [{
+        "type": "function",
+        "name": "speaker_memory_recall",
+        "description": "Recall facts",
+        "parameters": {"type": "object", "properties": {}},
+    }]
+    before = list(handler.client.chat.completions.last_kwargs.get("messages", [])) if handler.client.chat.completions.last_kwargs else []
+    handler.prefill_session("Будь кратким", tools, "auto", debounce_ms=0)
+    assert handler.wait_for_prefill(timeout=1.0)
+
+    captured = handler.client.chat.completions.last_kwargs
+    assert captured["messages"][0]["role"] == "system"
+    assert "Будь кратким" in captured["messages"][0]["content"]
+    assert captured["tools"][0]["function"]["name"] == "speaker_memory_recall"
+    assert captured["tool_choice"] == "auto"
+    assert captured["max_tokens"] == 1
+    assert captured["stream"] is False
+    assert before and before[0]["content"] == "You are a helpful assistant"
+
+
 def test_text_request_forwards_configured_generation_limits():
     handler = _make_handler(stream=False, gen_kwargs={"max_tokens": 64, "temperature": 0.2})
 
@@ -139,6 +161,48 @@ def test_text_request_forwards_configured_generation_limits():
     captured = handler.client.chat.completions.last_kwargs
     assert captured["max_tokens"] == 64
     assert captured["temperature"] == 0.2
+
+
+def test_forced_tool_call_is_emitted_without_an_extra_provider_request():
+    handler = _make_handler(stream=False)
+    chat = Chat(10)
+    chat.add_item(make_user_message("Меня зовут Михаил"))
+    session = RealtimeSessionCreateRequest(type="realtime", instructions="Be brief")
+    session.tools = [{"type": "function", "name": "speaker_memory_remember_name"}]
+    rc = RuntimeConfig(chat=chat, session=session)
+    call = ResponseFunctionToolCall(
+        type="function_call",
+        name="speaker_memory_remember_name",
+        arguments='{"speaker_ref":"sr_1","name":"Михаил"}',
+        call_id="call_1",
+        id="fc_1",
+        status="completed",
+    )
+    req = GenerateResponseRequest(runtime_config=rc, forced_tool_call=call)
+
+    outputs = list(handler.process(req))
+
+    tool_chunks = [out for out in outputs if isinstance(out, LLMResponseChunk) and out.tools]
+    assert len(tool_chunks) == 1
+    assert tool_chunks[0].tools[0].name == "speaker_memory_remember_name"
+    assert isinstance(outputs[-1], EndOfResponse)
+    # The only request seen by the fake client is the constructor warmup.
+    assert handler.client.chat.completions.last_kwargs["messages"][0]["content"] == "You are a helpful assistant"
+
+
+def test_provider_memory_tool_call_gets_trusted_turn_reference_when_omitted():
+    handler = _make_handler(stream=False)
+    call = ResponseFunctionToolCall(
+        type="function_call",
+        name="speaker_memory_recall",
+        arguments='{"query":"о чём мы говорили"}',
+        call_id="call_1",
+        id="fc_1",
+        status="completed",
+    )
+    assert handler._inject_speaker_ref(call, "sr_trusted").arguments == (
+        '{"query":"о чём мы говорили","speaker_ref":"sr_trusted"}'
+    )
 
 
 def _chunk(content=None, tool_calls=None, usage=None):

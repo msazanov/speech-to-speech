@@ -15,6 +15,7 @@ from speech_to_speech.pipeline.messages import VADAudio
 from speech_to_speech.pipeline.transcript_logging import transcript_for_log
 
 from .extractor import SpeakerEmbeddingExtractor
+from .models import SpeakerAttribution, SpeakerState
 from .tracker import SpeakerTracker
 
 logger = logging.getLogger(__name__)
@@ -67,12 +68,12 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
         audio = np.asarray(vad_audio.audio, dtype=np.float32).reshape(-1)
         duration_ms = audio.size * 1000 / self.sample_rate
         if duration_ms < self.min_audio_ms:
-            yield vad_audio
+            yield self._unknown(vad_audio)
             return
 
         quality = self._quality(audio)
         if quality < getattr(self.tracker, "minimum_quality", 0.5):
-            yield vad_audio
+            yield self._unknown(vad_audio)
             return
 
         try:
@@ -105,10 +106,22 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
                 return
         except Exception as exc:
             logger.warning("Speaker attribution skipped after %s", type(exc).__name__)
-            yield vad_audio
+            yield self._unknown(vad_audio)
             return
 
         yield vad_audio.model_copy(update={"speaker": attribution})
+
+    @staticmethod
+    def _unknown(vad_audio: VADAudio) -> VADAudio:
+        """Keep a metadata-bearing pass-through for short/failed segments."""
+        return vad_audio.model_copy(
+            update={
+                "speaker": SpeakerAttribution(
+                    state=SpeakerState.UNKNOWN,
+                    recommendation="do_not_learn",
+                )
+            }
+        )
 
     @staticmethod
     def _quality(audio: np.ndarray) -> float:

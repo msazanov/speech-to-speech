@@ -23,7 +23,7 @@ def test_static_modules_disable_browser_cache_during_local_iteration():
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    assert 'role === "user" ? "Voice…"' in response.text
+    assert 'role === "user" ? "Unknown voice"' in response.text
 
 
 def test_config_exposes_native_speaker_memory_tool_schemas(monkeypatch):

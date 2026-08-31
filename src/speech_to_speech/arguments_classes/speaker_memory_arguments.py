@@ -31,6 +31,10 @@ class SpeakerMemoryArguments:
         default=0.70,
         metadata={"help": "Cosine threshold below which a new voice cluster may be created."},
     )
+    speaker_memory_group_threshold: float = field(
+        default=0.55,
+        metadata={"help": "Cosine threshold for suggesting a person from a nearby voice cluster."},
+    )
     speaker_memory_ambiguity_margin: float = field(
         default=0.08,
         metadata={"help": "Minimum cosine margin over the runner-up voice cluster."},

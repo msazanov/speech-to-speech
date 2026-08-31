@@ -68,14 +68,11 @@ class SpeakerMemoryService:
         if not normalized_name or len(normalized_name) > self._MAX_NAME_LENGTH:
             raise ValueError(f"name must contain 1 to {self._MAX_NAME_LENGTH} characters")
         reference = self.store.resolve_reference(speaker_ref, conversation_id=conversation_id)
-        person = next(
-            (
-                candidate
-                for candidate in self.store.resolve_person_candidates(reference.voice_id)
-                if candidate.name.casefold() == normalized_name.casefold()
-            ),
-            None,
-        )
+        candidates = [
+            *self.store.resolve_person_candidates(reference.voice_id),
+            *self.store.resolve_reference_candidates(speaker_ref),
+        ]
+        person = next((candidate for candidate in candidates if candidate.name.casefold() == normalized_name.casefold()), None)
         if person is None:
             created = self.store.create_person(normalized_name, reuse=False)
             person_id = created.id
