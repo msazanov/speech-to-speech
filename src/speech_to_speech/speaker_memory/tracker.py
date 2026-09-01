@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 import numpy as np
 
 from .models import PersonCandidate, SpeakerAttribution, SpeakerState, VoiceCluster
 from .store import SpeakerMemoryStore, normalize_embedding
+
+logger = logging.getLogger(__name__)
 
 
 class SpeakerTracker:
@@ -220,13 +223,19 @@ class SpeakerTracker:
             key=lambda item: (item[0].sample_count, item[0].quality_weight, -item[0].created_at),
         )
         merged = False
-        for source, _ in eligible:
+        for source, similarity in eligible:
             if source.id == target.id:
                 continue
             self.store.merge_voice_clusters(
                 source.id,
                 target.id,
                 reason="high_similarity_unassigned_clusters",
+            )
+            logger.info(
+                "Speaker clusters auto-merged source=%s canonical=%s cosine=%.3f",
+                source.id,
+                target.id,
+                similarity,
             )
             target = self.store.get_voice_cluster(target.id)
             merged = True
