@@ -21,6 +21,30 @@ from speech_to_speech.utils.utils import _generate_id
 _CONTEXT_OPEN = "<huggingvoice_speaker_context>"
 _CONTEXT_CLOSE = "</huggingvoice_speaker_context>"
 _MAX_FIELD_LENGTH = 200
+_MAX_NAME_WORDS = 4
+_NAME_STOP_WORDS = frozenset(
+    {
+        # STT often removes punctuation, so stop an introduction before the
+        # rest of the sentence instead of sending the whole utterance as the
+        # person's name (the service deliberately rejects names over 80 chars).
+        "это",
+        "я",
+        "мне",
+        "меня",
+        "мой",
+        "моя",
+        "мое",
+        "моё",
+        "говорю",
+        "сейчас",
+        "здесь",
+        "для",
+        "and",
+        "i",
+        "my",
+        "this",
+    }
+)
 
 
 def _tool_names(tools: Iterable[Any] | None) -> set[str]:
@@ -68,6 +92,21 @@ def _clean(value: str, *, preserve_terminal_punctuation: bool = False) -> str:
     return cleaned[:_MAX_FIELD_LENGTH]
 
 
+def _intro_name(value: str) -> str:
+    """Extract a short name from a punctuation-free STT introduction."""
+
+    words = _clean(value).split()
+    selected: list[str] = []
+    for word in words:
+        normalized = word.casefold().strip(".,!?;:")
+        if selected and normalized in _NAME_STOP_WORDS:
+            break
+        selected.append(word)
+        if len(selected) >= _MAX_NAME_WORDS:
+            break
+    return " ".join(selected)[:80]
+
+
 def route_fast_tool(text: str, tools: Iterable[Any] | None) -> ResponseFunctionToolCall | None:
     """Return one explicit local tool call, or ``None`` for ordinary text."""
 
@@ -83,7 +122,7 @@ def route_fast_tool(text: str, tools: Iterable[Any] | None) -> ResponseFunctionT
             flags=re.IGNORECASE,
         )
         if match:
-            name = _clean(match.group(1))
+            name = _intro_name(match.group(1))
             if name:
                 return _call("speaker_memory_remember_name", {"speaker_ref": speaker_ref, "name": name})
 

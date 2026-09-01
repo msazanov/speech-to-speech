@@ -25,6 +25,12 @@ def test_routes_name_introduction_using_only_trusted_reference() -> None:
     assert isinstance(call, ResponseFunctionToolCall)
     assert call.name == "speaker_memory_remember_name"
     assert json.loads(call.arguments) == {"speaker_ref": "sr_trusted", "name": "Михаил"}
+    long_stt = route_fast_tool(
+        with_speaker("меня зовут аркадий это длинная проверочная фраза для распознавания голоса"),
+        TOOLS,
+    )
+    assert long_stt is not None
+    assert json.loads(long_stt.arguments) == {"speaker_ref": "sr_trusted", "name": "аркадий"}
     recall = route_fast_tool(with_speaker("Как меня зовут?"), TOOLS)
     assert recall is not None and recall.name == "speaker_memory_recall"
     assert json.loads(recall.arguments) == {"speaker_ref": "sr_trusted", "query": "Как меня зовут?"}
