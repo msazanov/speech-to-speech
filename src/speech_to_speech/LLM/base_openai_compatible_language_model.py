@@ -3,13 +3,14 @@ from __future__ import annotations
 import base64
 import io
 import ipaddress
+import json
 import logging
 import os
 import wave
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterator
 from queue import Empty, Full, Queue
-from threading import BoundedSemaphore, Lock, Thread, current_thread
+from threading import BoundedSemaphore, Lock, Thread, Timer, current_thread
 from threading import Event as ThreadingEvent
 from time import perf_counter
 from typing import Any, Literal, Optional
@@ -58,6 +59,7 @@ from speech_to_speech.pipeline.messages import (
 )
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 from speech_to_speech.pipeline.transcript_logging import log_exception, structured_for_log, transcript_for_log
+from speech_to_speech.speaker_memory.context import format_speaker_context
 from speech_to_speech.utils.utils import is_out_of_band, response_wants_audio
 
 logger = logging.getLogger(__name__)
@@ -126,6 +128,8 @@ class _Turn(BaseModel):
     # End of the conversation when this turn started; keeps its output ahead of
     # user messages appended while the model was still running.
     history_anchor_id: str | None = None
+    forced_tool_call: ResponseFunctionToolCall | None = None
+    speaker_ref: str | None = None
 
 
 class _GenState(BaseModel):
@@ -155,6 +159,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
     usage, out-of-band handling and error termination.
     """
 
+    supports_session_prefill = False
+
     # ── setup ─────────────────────────────────────────────────────────────────
 
     def setup(
@@ -179,6 +185,10 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         audio_temperature: float = 0.0,
         audio_content_type: Literal["input_audio", "audio_url"] = "input_audio",
         audio_history_turns: int = 1,
+        session_prefill_enabled: bool = True,
+        session_prefill_debounce_ms: int = 75,
+        session_prefill_max_tokens: int = 1,
+        session_prefill_timeout_s: float = 5.0,
         **_kwargs: Any,
     ) -> None:
         self.cancel_scope = cancel_scope
@@ -194,8 +204,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             raise ValueError("audio_content_type must be either 'input_audio' or 'audio_url'.")
         self.audio_content_type = audio_content_type
         self.audio_history_turns = max(0, audio_history_turns)
+        self.session_prefill_enabled = bool(session_prefill_enabled)
+        self.session_prefill_debounce_ms = max(0, int(session_prefill_debounce_ms))
+        self.session_prefill_max_tokens = max(1, int(session_prefill_max_tokens))
         self.reasoning_effort = reasoning_effort
         self.request_timeout_s = float(request_timeout_s)
+        self.session_prefill_timeout_s = max(0.1, min(self.request_timeout_s, float(session_prefill_timeout_s)))
         if max_retries is not None and max_retries < 0:
             raise ValueError("max_retries must be non-negative")
         self.max_retries = max_retries
@@ -220,6 +234,11 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         self._prefetch_worker_slots = BoundedSemaphore(PREFETCH_PROVIDER_WORKER_LIMIT)
         self._prefetch_workers_lock = Lock()
         self._prefetch_workers: set[Thread] = set()
+        self._session_prefill_lock = Lock()
+        self._session_prefill_timer: Timer | None = None
+        self._session_prefill_fingerprint: str | None = None
+        self._session_prefill_done = ThreadingEvent()
+        self._session_prefill_done.set()
         self.compactor = build_compactor(self._build_compaction_generate_fn()) if compact_history else None
         self.warmup()
 
@@ -323,6 +342,95 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
     def _build_optional_kwargs(self, req_tools: Any, req_tool_choice: Any) -> dict[str, Any]:
         """Build the per-request tools/tool_choice kwargs in the backend's shape."""
         ...
+
+    def prefill_session(
+        self,
+        instructions: str | None,
+        tools: Any,
+        tool_choice: Any,
+        *,
+        debounce_ms: int | None = None,
+    ) -> bool:
+        """Warm the provider's prompt/KV prefix for the current session.
+
+        This is deliberately debounced and deduplicated: rapid browser
+        ``session.update`` events cancel the previous timer, while an identical
+        configuration never creates another provider request.  The actual
+        request is implemented by the concrete backend and uses one token with
+        a bounded timeout, so it cannot become an unbounded retry path.
+        """
+        if not self.session_prefill_enabled:
+            return False
+        # Russian is the dominant configured language for this local profile;
+        # using it here makes the prefetched prefix byte-for-byte identical to
+        # the first ordinary Russian turn (English turns can warm a new prefix
+        # on demand).
+        full_instructions = build_voice_system_prompt(
+            instructions or "",
+            language_name="Russian" if self.enable_lang_prompt else None,
+        )
+        try:
+            fingerprint = json.dumps(
+                {
+                    "model": self.model_name,
+                    "instructions": full_instructions,
+                    "tools": tools or [],
+                    "tool_choice": tool_choice,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+        except Exception:
+            fingerprint = repr((self.model_name, full_instructions, tools, tool_choice))
+        delay = self.session_prefill_debounce_ms if debounce_ms is None else max(0, int(debounce_ms))
+        with self._session_prefill_lock:
+            if fingerprint == self._session_prefill_fingerprint:
+                return True
+            if self._session_prefill_timer is not None:
+                self._session_prefill_timer.cancel()
+            self._session_prefill_fingerprint = fingerprint
+            self._session_prefill_done.clear()
+            timer = Timer(
+                delay / 1000.0,
+                self._run_session_prefill,
+                args=(full_instructions, tools or [], tool_choice),
+            )
+            timer.daemon = True
+            self._session_prefill_timer = timer
+            timer.start()
+        logger.info(
+            "LLM session prefill scheduled model=%s debounce_ms=%d tools=%d",
+            self.model_name,
+            delay,
+            len(tools or []),
+        )
+        return True
+
+    def _run_session_prefill(self, instructions: str, tools: Any, tool_choice: Any) -> None:
+        def perform() -> None:
+            try:
+                self._perform_session_prefill(instructions, tools, tool_choice)
+            except Exception as exc:
+                logger.warning("Session prefill failed: %s", exc)
+            finally:
+                self._session_prefill_done.set()
+
+        try:
+            if self._start_prefetch_worker(perform, name="realtime-session-prefill") is None:
+                logger.info("Skipping session prefill while a provider worker is active")
+                self._session_prefill_done.set()
+        except Exception as exc:
+            logger.warning("Session prefill failed: %s", exc)
+            self._session_prefill_done.set()
+
+    def _perform_session_prefill(self, instructions: str, tools: Any, tool_choice: Any) -> None:
+        """Backend hook for a one-token, non-streaming prefix request."""
+        raise NotImplementedError
+
+    def wait_for_prefill(self, timeout: float | None = None) -> bool:
+        """Wait for the currently scheduled prefill (primarily useful in tests)."""
+        return self._session_prefill_done.wait(timeout)
 
     # ── audio-input protocol hooks ───────────────────────────────────────────
 
@@ -564,6 +672,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
 
         Out-of-band turns never touch the default conversation, and a stale turn
         records nothing (it is not forwarded to the client either)."""
+        item = self._inject_speaker_ref(item, turn.speaker_ref)
         state.tools.append(item)
         fc_item = RealtimeConversationItemFunctionCall(
             type="function_call",
@@ -597,6 +706,28 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     state.recorded_call_ids.add(recorded.call_id)
         state.output_emitted = True
         yield self._chunk(turn, tools=[item])
+
+    @staticmethod
+    def _inject_speaker_ref(item: ResponseFunctionToolCall, speaker_ref: str | None) -> ResponseFunctionToolCall:
+        """Complete a model tool call with trusted turn metadata, never model data.
+
+        A model-generated ``speaker_ref`` is untrusted: it may be stale or
+        copied from the conversation. Always replace it with the short-lived
+        reference issued for this audio turn before a memory tool reaches the
+        executor.
+        """
+        if not speaker_ref or not item.name.startswith("speaker_memory_"):
+            return item
+        try:
+            arguments = json.loads(item.arguments or "{}")
+        except (TypeError, ValueError):
+            return item
+        if not isinstance(arguments, dict):
+            return item
+        arguments["speaker_ref"] = speaker_ref
+        return item.model_copy(
+            update={"arguments": json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))}
+        )
 
     # ── consumption ─────────────────────────────────────────────────────────--
 
@@ -812,7 +943,11 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                         provider_started_at_s = perf_counter()
                         return (request_fn or self._request)(api_input, optional_kwargs)
 
-                    if turn.prefetch_transaction is not None:
+                    if turn.forced_tool_call is not None:
+                        provider_request_started = True
+                        provider_started_at_s = perf_counter()
+                        events = iter((ToolCall(item=turn.forced_tool_call),))
+                    elif turn.prefetch_transaction is not None:
                         events = self._iter_prefetch_events_interruptibly(
                             make_request,
                             event_iterator_fn or self._iter_events,
@@ -1036,6 +1171,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             if response is not None and response.instructions is not None
             else runtime_config.session.instructions
         ) or ""
+        if request.speaker is not None:
+            # Direct-audio turns have no transcript message where the text path
+            # can prepend identity metadata. Keep the same bounded trusted
+            # context in the system prompt so every LLM request is speaker-aware.
+            speaker_context = format_speaker_context(request.speaker)
+            instructions = f"{instructions}\n{speaker_context}" if instructions else speaker_context
         req_tools = (
             response.tools if response is not None and response.tools is not None else runtime_config.session.tools
         )
@@ -1092,6 +1233,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             response_key=request.response_key,
             prefetch_transaction=request.prefetch_transaction,
             history_anchor_id=history_anchor_id,
+            forced_tool_call=request.forced_tool_call,
+            speaker_ref=request.speaker_ref,
         )
         yield from self._generate(
             active_chat,
@@ -1187,6 +1330,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             response_key=request.response_key,
             prefetch_transaction=request.prefetch_transaction,
             history_anchor_id=history_anchor_id,
+            forced_tool_call=request.forced_tool_call,
+            speaker_ref=request.speaker_ref,
         )
         yield from self._generate(active_chat, original_chat, turn, optional_kwargs)
 

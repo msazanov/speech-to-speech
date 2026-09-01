@@ -19,7 +19,9 @@ class SpeakerMemoryService:
 
     _REMEMBER_WEIGHT = 3.0
     _CONFIRM_WEIGHT = 2.0
-    _REJECT_WEIGHT = -3.0
+    # Rejection is an explicit privacy boundary.  A single negative event
+    # must outweigh an earlier introduction/confirmation on this reference.
+    _REJECT_WEIGHT = -4.0
     _MAX_NAME_LENGTH = 80
     _MAX_FACT_LENGTH = 500
     _MAX_TOPIC_LENGTH = 80
@@ -37,9 +39,10 @@ class SpeakerMemoryService:
 
     def inspect(self, speaker_ref: str, *, conversation_id: str) -> SpeakerAttribution:
         reference = self.store.resolve_reference(speaker_ref, conversation_id=conversation_id)
-        state, candidate = self._identity_state(reference.voice_id)
+        canonical_voice_id = self.store.resolve_voice_id(reference.voice_id)
+        state, candidate = self._identity_state(canonical_voice_id)
         return SpeakerAttribution(
-            voice_id=reference.voice_id,
+            voice_id=canonical_voice_id,
             speaker_ref=speaker_ref,
             state=state,
             candidate=candidate,
@@ -68,25 +71,31 @@ class SpeakerMemoryService:
         if not normalized_name or len(normalized_name) > self._MAX_NAME_LENGTH:
             raise ValueError(f"name must contain 1 to {self._MAX_NAME_LENGTH} characters")
         reference = self.store.resolve_reference(speaker_ref, conversation_id=conversation_id)
-        person = next(
-            (
-                candidate
-                for candidate in self.store.resolve_person_candidates(reference.voice_id)
-                if candidate.name.casefold() == normalized_name.casefold()
-            ),
-            None,
-        )
+        candidates = [
+            *self.store.resolve_person_candidates(reference.voice_id),
+            *self.store.resolve_reference_candidates(speaker_ref),
+        ]
+        person = next((candidate for candidate in candidates if candidate.name.casefold() == normalized_name.casefold()), None)
         if person is None:
             created = self.store.create_person(normalized_name, reuse=False)
             person_id = created.id
         else:
             person_id = person.person_id
+        self.store.clear_voice_person_block(reference.voice_id, person_id)
         self.store.add_identity_evidence(
             reference.voice_id,
             person_id,
             kind="self_introduction",
             weight=self._REMEMBER_WEIGHT,
             observation_id=reference.observation_id,
+        )
+        # A self-introduction is an explicit identity assertion.  If this is
+        # a newly-created acoustic cluster, fold it into the person's mature
+        # cluster while retaining the source alias for later rejection/audit.
+        self.store.merge_voice_with_person(
+            reference.voice_id,
+            person_id,
+            reason="explicit_name_introduction",
         )
         self.store.bind_reference_candidate(speaker_ref, person_id)
         return self.inspect(speaker_ref, conversation_id=conversation_id)
@@ -183,6 +192,23 @@ class SpeakerMemoryService:
             weight=weight,
             observation_id=reference.observation_id,
         )
+        if kind == "agent_confirmation":
+            self.store.clear_voice_person_block(reference.voice_id, person_id)
+            self.store.merge_voice_with_person(
+                reference.voice_id,
+                person_id,
+                reason="explicit_agent_confirmation",
+            )
+        elif kind == "agent_rejection":
+            # Keep this source cluster independent from the previously linked
+            # canonical voice, then let the strong negative evidence force a
+            # fresh clarification on the next turn.
+            self.store.block_voice_person(
+                reference.voice_id,
+                person_id,
+                reason="explicit speaker rejection",
+            )
+            self.store.detach_voice_alias(reference.voice_id)
         return self.inspect(speaker_ref, conversation_id=conversation_id)
 
     def _identity_state(self, voice_id: str) -> tuple[SpeakerState, PersonCandidate | None]:
@@ -190,6 +216,8 @@ class SpeakerMemoryService:
         if not candidates:
             return SpeakerState.UNKNOWN, None
         candidate = candidates[0]
+        if candidate.evidence_score < 0:
+            return SpeakerState.UNKNOWN, None
         runner_score = candidates[1].evidence_score if len(candidates) > 1 else float("-inf")
         decisive = (
             candidate.evidence_score >= self.identity_threshold

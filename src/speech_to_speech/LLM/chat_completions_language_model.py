@@ -6,6 +6,7 @@ import time
 from collections.abc import Iterator
 from typing import Any, cast
 
+import httpx
 from openai import Stream
 from openai.types.chat import (
     ChatCompletionChunk,
@@ -285,6 +286,8 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
     which already emits OpenAI chat messages including ``tool_calls``/``tool`` roles.
     """
 
+    supports_session_prefill = True
+
     def warmup(self) -> None:
         logger.info(f"Warming up {self.__class__.__name__}")
         start = time.time()
@@ -296,6 +299,10 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
                 {"role": "system", "content": "You are a helpful assistant"},
                 {"role": "user", "content": "Hello"},
             ],
+            # Warmup only needs to populate the provider's model/KV path; a
+            # full generated answer here needlessly delays pipeline startup.
+            max_tokens=1,
+            temperature=0,
             extra_body=self._extra_body,
             timeout=self.request_timeout,
         )
@@ -359,6 +366,28 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
             optional_kwargs=optional_kwargs,
         )
 
+    def _perform_session_prefill(self, instructions: str, tools: Any, tool_choice: Any) -> None:
+        """Issue a bounded, non-streaming request to populate the provider KV prefix."""
+        optional_kwargs = _build_chat_optional_kwargs(tools, tool_choice)
+        optional_kwargs.update({"max_tokens": self.session_prefill_max_tokens, "temperature": 0})
+        response = _request_chat_completions(
+            client=self.client,
+            model_name=self.model_name,
+            messages=[
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": " "},
+            ],
+            stream=False,
+            extra_body=self._extra_body,
+            timeout=httpx.Timeout(
+                self.session_prefill_timeout_s,
+                connect=min(2.0, self.session_prefill_timeout_s),
+            ),
+            optional_kwargs=optional_kwargs,
+        )
+        self._close_response(response)
+        logger.info("LLM session prefill completed model=%s tools=%d", self.model_name, len(tools or []))
+
     def _iter_stream_events(self, api_response: Stream[ChatCompletionChunk]) -> Iterator[ProviderEvent]:
         yield from _iter_chat_stream_events(api_response)
 
@@ -370,4 +399,10 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         yield from _tool_calls_from_accum(tool_accum)
 
     def on_session_end(self) -> None:
+        with self._session_prefill_lock:
+            if self._session_prefill_timer is not None:
+                self._session_prefill_timer.cancel()
+                self._session_prefill_timer = None
+            self._session_prefill_fingerprint = None
+            self._session_prefill_done.set()
         logger.debug("Chat Completions API language model session state reset")

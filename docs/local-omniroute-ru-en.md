@@ -37,7 +37,7 @@ cd /home/random/dev/huggingvoice
 
 HuggingVoice не запускает, не останавливает и не переключает LLM. FreeToken
 владеет портом `1919`, очередью и переключением моделей. Профиль отправляет
-`model=gemma-4-e2b`, ждёт один запрос до 60 секунд и отключает SDK retries,
+`model=gemma-4-e2b`, ждёт один запрос до 120 секунд и отключает SDK retries,
 чтобы timeout не создавал повторный элемент в FIFO.
 
 Source-controlled unit HuggingVoice находится в `deploy/systemd/`. После
@@ -50,6 +50,11 @@ cd /home/random/dev/huggingvoice
 
 Не выполняйте эти команды, пока владелец FreeToken arbiter не подтвердит
 готовность endpoint и не будет дан отдельный сигнал на установку/перезапуск.
+
+При каждом `session.update` Chat Completions backend ставит в очередь один
+непотоковый prefill-запрос с `max_tokens=1` и тайм-аутом 5 секунд. Он дебаунсится (75 мс), не меняет
+историю диалога и ограничен общим provider-worker, поэтому не создаёт бесконечных
+повторов и прогревает prompt/tools prefix до первой реплики.
 
 Проверка состояния:
 
@@ -141,19 +146,29 @@ PipeWire-устройств.
 ## Ключевые параметры производительности
 
 - Chat Completions: `max_tokens=64`, `temperature=0.2`, thinking отключён через
-  `chat_template_kwargs`, timeout 60 с, SDK retries 0;
+  `chat_template_kwargs`, timeout 120 с, SDK retries 0; prefill — 1 токен;
 - GigaAM: `CPUExecutionProvider`, INT8, 6 потоков;
 - Silero/RHVoice: 24 кГц синтез с преобразованием в 16 кГц блоками по 512 samples;
-- VAD: `min_silence_ms=500`, live transcription отключена.
+- VAD: `min_silence_ms=500`, live transcription включена с интервалом 250 мс.
 
 HuggingVoice держит STT/VAD/TTS на CPU и не управляет размещением LLM в RAM/VRAM.
 Speaker embedding также жёстко использует CPU и один поток. Сырые аудиозаписи не
 сохраняются; SQLite содержит биометрические центроиды, имена и личные факты и
 должна считаться приватной. Факты доступны только при состоянии `known`.
 
-В source-controlled профиле `speaker_memory_enabled=false`. Это намеренный
-activation gate: память голосов нельзя включать до успешного теста ниже на двух
-реальных людях и целевом компьютере. Остальной голосовой конвейер работает без неё.
+В source-controlled профиле `speaker_memory_enabled=true`: каждый пригодный
+финальный сегмент получает стабильный `voice_id`, а близкий новый кластер может
+получить только кандидата на уже известного человека (`conflict/clarify`), без
+автоматического слияния и доступа к фактам. После явного имени или подтверждения
+несколько `voice_id` связываются с одним `person_id`; сами акустические кластеры
+остаются раздельными. Короткие, тихие и ошибочные сегменты проходят дальше с
+явной метаинформацией `state=unknown, recommendation=do_not_learn`.
+
+Внутри LLM-сообщения HuggingVoice передаёт доверенный `speaker_ref`, `voice_id` и
+состояние. Если совместимая модель вернула memory tool без `speaker_ref`, backend
+добавляет только ref текущего аудиотура; произвольный ID от модели не принимается.
+В браузере вместо `You` показывается имя известного человека или стабильный
+`voice_id`, а цвет выбирается отдельно для каждого голоса.
 
 ## Проверка памяти голосов
 
@@ -198,10 +213,10 @@ embedding+clustering не превышает 100 мс. Пороги предва
 ## Проверка исходников
 
 ```bash
-uv run pytest -q tests/test_local_bootstrap_config.py tests/test_local_arbiter_integration.py
+uv run pytest -q tests/test_local_arbiter_integration.py tests/test_acoustic_loopback_smoke.py
 uv run ruff check src/speech_to_speech/LLM \
   src/speech_to_speech/arguments_classes/responses_api_language_model_arguments.py \
-  tests/test_local_bootstrap_config.py tests/test_local_arbiter_integration.py
+  tests/test_local_arbiter_integration.py tests/test_acoustic_loopback_smoke.py
 bash -n scripts/*.sh
 systemd-analyze --user verify deploy/systemd/*.service
 git diff --check

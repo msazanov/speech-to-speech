@@ -86,14 +86,16 @@ def test_final_audio_is_attributed_but_progressive_audio_is_not(caplog) -> None:
     assert "sr_test" not in caplog.text
 
 
-def test_short_final_audio_passes_through_without_inference() -> None:
+def test_short_final_audio_passes_through_with_explicit_unknown_metadata() -> None:
     extractor = FakeExtractor()
     tracker = FakeTracker()
     handler = bare_handler(extractor, tracker, min_audio_ms=700)
 
     result = list(handler.process(audio(samples=8000)))[0]
 
-    assert getattr(result, "speaker", None) is None
+    assert result.speaker is not None
+    assert result.speaker.state is SpeakerState.UNKNOWN
+    assert result.speaker.recommendation == "do_not_learn"
     assert extractor.calls == 0
     assert tracker.store.invalidated == ["conv_test"]
 
@@ -143,7 +145,9 @@ def test_low_signal_final_audio_is_rejected_before_embedding() -> None:
         )
     )[0]
 
-    assert result.speaker is None
+    assert result.speaker is not None
+    assert result.speaker.state is SpeakerState.UNKNOWN
+    assert result.speaker.recommendation == "do_not_learn"
     assert extractor.calls == 0
     assert tracker.calls == []
 
@@ -156,7 +160,9 @@ def test_embedding_failure_keeps_pipeline_usable_without_logging_sensitive_messa
     original = audio()
     result = list(handler.process(original))[0]
 
-    assert result is original
+    assert result is not original
+    assert result.speaker is not None
+    assert result.speaker.state is SpeakerState.UNKNOWN
     assert "private audio details" not in caplog.text
     assert "RuntimeError" in caplog.text
 

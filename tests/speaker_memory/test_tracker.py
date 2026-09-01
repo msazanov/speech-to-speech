@@ -64,6 +64,28 @@ def test_decisive_match_reuses_voice_and_updates_centroid(store: SpeakerMemorySt
     assert np.linalg.norm(updated.centroid) == pytest.approx(1.0)
 
 
+def test_mature_unassigned_cluster_reuses_weak_match_and_refines_centroid(
+    store: SpeakerMemoryStore,
+) -> None:
+    memory_tracker = tracker(
+        store,
+        soft_match_threshold=0.60,
+        soft_match_min_samples=2,
+        soft_match_weight=0.25,
+    )
+    first = observe(memory_tracker, unit([1.0, 0.0]))
+    observe(memory_tracker, unit([0.98, 0.20]), turn_id="turn_2")
+    before = store.get_voice_cluster(first.voice_id)
+
+    weak = observe(memory_tracker, unit([0.60, 0.80]), turn_id="turn_3")
+    after = store.get_voice_cluster(first.voice_id)
+
+    assert weak.voice_id == first.voice_id
+    assert weak.state is SpeakerState.UNKNOWN
+    assert after.sample_count == before.sample_count + 1
+    assert not np.array_equal(after.centroid, before.centroid)
+
+
 def test_decisive_match_to_blacklisted_voice_is_rejected_without_centroid_drift(
     store: SpeakerMemoryStore,
 ) -> None:
@@ -151,7 +173,7 @@ def test_service_uses_fixed_semantic_evidence_weights(store: SpeakerMemoryStore)
 
     candidates = store.resolve_person_candidates(first.voice_id)
     assert candidates[0].name == "Аркадий"
-    assert candidates[0].evidence_score == pytest.approx(2.0)
+    assert candidates[0].evidence_score == pytest.approx(1.0)
 
 
 def test_replayed_confirmation_is_idempotent_for_same_observation(store: SpeakerMemoryStore) -> None:
@@ -172,3 +194,40 @@ def test_inspection_cannot_use_reference_from_another_conversation(store: Speake
 
     with pytest.raises(Exception, match="another conversation"):
         service.inspect(first.speaker_ref, conversation_id="conv_2")
+
+
+def test_similar_new_voice_gets_known_person_as_clarification_candidate(store: SpeakerMemoryStore) -> None:
+    memory_tracker = tracker(store, group_threshold=0.55)
+    first = observe(memory_tracker, unit([1.0, 0.0]), turn_id="turn_owner")
+    person = store.create_person("Михаил")
+    store.add_identity_evidence(first.voice_id, person.id, kind="self_introduction", weight=3.0)
+
+    # The sample is deliberately below the ordinary cluster threshold, so it
+    # becomes a second voice_id while still being close enough to propose the
+    # already-known person for explicit clarification.
+    second = observe(memory_tracker, unit([0.58, 0.815]), turn_id="turn_alias")
+
+    assert second.voice_id != first.voice_id
+    assert second.state is SpeakerState.CONFLICT
+    assert second.recommendation == "clarify"
+    assert second.candidate is not None
+    assert second.candidate.person_id == person.id
+    assert store.reference_allows_candidate(second.speaker_ref, person.id)
+
+    linked = SpeakerMemoryService(store).remember_name(second.speaker_ref, "Михаил", conversation_id="conv_1")
+    assert linked.candidate is not None
+    assert linked.candidate.person_id == person.id
+    assert linked.voice_id == first.voice_id
+    assert store.resolve_voice_id(second.voice_id) == first.voice_id
+
+    # A later explicit rejection detaches only this newly merged source and
+    # forces clarification instead of leaking the canonical person's memory.
+    store.add_identity_evidence(second.voice_id, person.id, kind="passive_match", weight=10.0)
+    rejected = SpeakerMemoryService(store).reject(
+        second.speaker_ref,
+        person.id,
+        conversation_id="conv_1",
+    )
+    assert rejected.state is SpeakerState.UNKNOWN
+    assert rejected.voice_id == second.voice_id
+    assert store.resolve_voice_id(second.voice_id) == second.voice_id

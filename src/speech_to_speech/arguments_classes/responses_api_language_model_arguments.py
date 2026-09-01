@@ -79,3 +79,19 @@ class ResponsesApiLanguageModelHandlerArguments(LanguageModelBaseArguments):
             "a role-preserving placeholder. Set to 0 to replace every completed audio turn. Default is 1."
         },
     )
+    responses_api_session_prefill_enabled: bool = field(
+        default=True,
+        metadata={"help": "Warm the current prompt/tools prefix on session.update. Default is enabled."},
+    )
+    responses_api_session_prefill_debounce_ms: int = field(
+        default=75,
+        metadata={"help": "Debounce interval for session prefix prefill in milliseconds."},
+    )
+    responses_api_session_prefill_max_tokens: int = field(
+        default=1,
+        metadata={"help": "Maximum generated tokens for the bounded session prefill request."},
+    )
+    responses_api_session_prefill_timeout_s: float = field(
+        default=5.0,
+        metadata={"help": "Timeout in seconds for the bounded session prefill request."},
+    )

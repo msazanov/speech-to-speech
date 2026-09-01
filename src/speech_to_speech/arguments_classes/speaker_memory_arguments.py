@@ -31,6 +31,30 @@ class SpeakerMemoryArguments:
         default=0.70,
         metadata={"help": "Cosine threshold below which a new voice cluster may be created."},
     )
+    speaker_memory_group_threshold: float = field(
+        default=0.55,
+        metadata={"help": "Cosine threshold for suggesting a person from a nearby voice cluster."},
+    )
+    speaker_memory_soft_match_threshold: float = field(
+        default=0.60,
+        metadata={"help": "Lower bound for reusing a mature unassigned cluster with a small centroid update."},
+    )
+    speaker_memory_soft_match_min_samples: int = field(
+        default=3,
+        metadata={"help": "Minimum samples before a weak voice match may reuse a cluster."},
+    )
+    speaker_memory_soft_match_weight: float = field(
+        default=0.25,
+        metadata={"help": "Centroid update weight for a weak reusable match. Default is conservative."},
+    )
+    speaker_memory_automerge_threshold: float = field(
+        default=0.82,
+        metadata={"help": "Cosine threshold for merging mature unassigned voice clusters."},
+    )
+    speaker_memory_automerge_min_samples: int = field(
+        default=3,
+        metadata={"help": "Minimum samples in each unassigned cluster before automatic merging."},
+    )
     speaker_memory_ambiguity_margin: float = field(
         default=0.08,
         metadata={"help": "Minimum cosine margin over the runner-up voice cluster."},

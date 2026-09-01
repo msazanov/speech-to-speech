@@ -293,7 +293,7 @@ def test_schema_v2_database_migrates_to_current_version(tmp_path) -> None:
 
     store = SpeakerMemoryStore(path)
 
-    assert store._connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 4
+    assert store._connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
     assert store._connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='speaker_reference_candidates'"
     ).fetchone()

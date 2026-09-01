@@ -53,6 +53,7 @@ from speech_to_speech.api.openai_realtime.handlers import (
 from speech_to_speech.api.openai_realtime.input_state import InputItemState
 from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
 from speech_to_speech.LLM.chat import Chat, make_user_message
+from speech_to_speech.LLM.fast_tool_router import route_fast_tool
 from speech_to_speech.pipeline.events import (
     AssistantOutputEvent,
     AssistantResponseDoneEvent,
@@ -308,6 +309,7 @@ class RealtimeService:
         self.speculative_turns = speculative_turns
         self._default_instructions = default_instructions
         self._required_instructions = required_instructions
+        self._prefill_handler: Any | None = None
         self._conns: dict[str, ConnState] = {}
         self.total_usage = GlobalUsageMetrics()
 
@@ -327,6 +329,14 @@ class RealtimeService:
             AssistantToolCallReadyEvent: self.response.on_assistant_tool_call_ready,
             ResponseFailedEvent: self._on_response_failed,
         }
+
+    def set_prefill_handler(self, handler: Any | None) -> None:
+        """Attach the LLM backend used to prefill the active session prefix."""
+        self._prefill_handler = (
+            handler
+            if hasattr(handler, "prefill_session") and getattr(handler, "supports_session_prefill", True)
+            else None
+        )
 
     # ── Connection lifecycle ─────────────────────
 
@@ -406,6 +416,13 @@ class RealtimeService:
     def handle_session_update(self, conn_id: str, event: SessionUpdateEvent) -> Optional[RealtimeErrorEvent]:
         error = self.session.handle_session_update(conn_id, event)
         if error is None:
+            if self._prefill_handler is not None:
+                session = self._state(conn_id).runtime_config.session
+                self._prefill_handler.prefill_session(
+                    session.instructions,
+                    session.tools,
+                    session.tool_choice,
+                )
             # A prefetch captured the previous session configuration.
             self.response.discard_tool_followup_prefetch(conn_id)
             self.response.maybe_start_tool_followup_prefetch(conn_id)
@@ -681,12 +698,22 @@ class RealtimeService:
 
         queue = self.text_prompt_queue
         if queue and transcript:
+            forced_tool_call = route_fast_tool(llm_transcript, cfg.session.tools)
+            if forced_tool_call is not None:
+                logger.info(
+                    "Fast tool route name=%s turn=%s voice=%s",
+                    forced_tool_call.name,
+                    event.turn_id,
+                    event.speaker.voice_id if event.speaker is not None else "unknown",
+                )
             request = GenerateResponseRequest(
                 runtime_config=cfg,
                 language_code=event.language_code,
                 turn_id=event.turn_id,
                 turn_revision=event.turn_revision,
                 speech_stopped_at_s=event.speech_stopped_at_s,
+                forced_tool_call=forced_tool_call,
+                speaker_ref=event.speaker.speaker_ref if event.speaker is not None else None,
             )
             st.mark_response_pending(request.response_key)
             queue.put(request)
@@ -733,6 +760,8 @@ class RealtimeService:
                 turn_id=event.turn_id,
                 turn_revision=event.turn_revision,
                 speech_stopped_at_s=event.speech_stopped_at_s,
+                speaker_ref=event.speaker.speaker_ref if event.speaker is not None else None,
+                speaker=event.speaker,
             )
             st.mark_response_pending(request.response_key)
             queue.put(request)

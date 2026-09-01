@@ -12,7 +12,7 @@ def test_browser_speaker_labels_use_identity_and_stable_distinct_colors() -> Non
         pytest.skip("Node.js is required for demo UI tests")
     repo = Path(__file__).resolve().parents[1]
     script = """
-const { speakerDisplayLabel, speakerDisplayColor } = await import('./demo/ui/chat.js');
+const { speakerDisplayLabel, speakerDisplayColor, speakerIdentityColorKey } = await import('./demo/ui/chat.js');
 const actual = {
   unknown: speakerDisplayLabel({ voice_id: 'v_aaa', state: 'unknown' }),
   known: speakerDisplayLabel({
@@ -21,6 +21,7 @@ const actual = {
   pending: speakerDisplayLabel(null),
   stable: speakerDisplayColor('v_aaa') === speakerDisplayColor('v_aaa'),
   distinct: speakerDisplayColor('v_aaa') !== speakerDisplayColor('v_bbb'),
+  grouped: speakerIdentityColorKey({ voice_id: 'v_aaa', person: { person_id: 'p_1' } }) === 'p_1',
 };
 console.log(JSON.stringify(actual));
 """
@@ -37,7 +38,8 @@ console.log(JSON.stringify(actual));
     assert json.loads(completed.stdout) == {
         "unknown": "v_aaa",
         "known": "Марат",
-        "pending": "Voice…",
+        "pending": "Unknown voice",
         "stable": True,
         "distinct": True,
+        "grouped": True,
     }

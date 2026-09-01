@@ -388,6 +388,12 @@ def _build_speaker_memory_handler(
             store,
             match_threshold=arguments.speaker_memory_match_threshold,
             candidate_threshold=arguments.speaker_memory_candidate_threshold,
+            group_threshold=arguments.speaker_memory_group_threshold,
+            soft_match_threshold=arguments.speaker_memory_soft_match_threshold,
+            soft_match_min_samples=arguments.speaker_memory_soft_match_min_samples,
+            soft_match_weight=arguments.speaker_memory_soft_match_weight,
+            automerge_threshold=arguments.speaker_memory_automerge_threshold,
+            automerge_min_samples=arguments.speaker_memory_automerge_min_samples,
             ambiguity_margin=arguments.speaker_memory_ambiguity_margin,
             reference_ttl_s=arguments.speaker_memory_reference_ttl_s,
         )
@@ -607,6 +613,8 @@ def _build_pipeline_unit(
         pipeline_index=index,
         speaker_memory_kwargs=speaker_memory_kwargs,
     )
+    llm_handler = next((handler for handler in handlers if hasattr(handler, "prefill_session")), None)
+    service.set_prefill_handler(llm_handler)
     for h in handlers:
         h.pipeline_index = index
 
