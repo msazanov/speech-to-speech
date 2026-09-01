@@ -33,6 +33,13 @@ def test_routes_name_introduction_using_only_trusted_reference() -> None:
     )
     assert long_stt is not None
     assert json.loads(long_stt.arguments) == {"speaker_ref": "sr_trusted", "name": "аркадий"}
+    compact = route_fast_tool(with_speaker("я Марат"), TOOLS)
+    assert compact is not None and compact.name == "speaker_memory_remember_name"
+    assert json.loads(compact.arguments) == {"speaker_ref": "sr_trusted", "name": "Марат"}
+    assert route_fast_tool(with_speaker("я хочу поговорить"), TOOLS) is None
+    named = route_fast_tool(with_speaker("моё имя — Тимур"), TOOLS)
+    assert named is not None
+    assert json.loads(named.arguments)["name"] == "Тимур"
     recall = route_fast_tool(with_speaker("Как меня зовут?"), TOOLS)
     assert recall is not None and recall.name == "speaker_memory_recall"
     assert json.loads(recall.arguments) == {"speaker_ref": "sr_trusted", "query": "Как меня зовут?"}

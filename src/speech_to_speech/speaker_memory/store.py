@@ -44,9 +44,10 @@ def normalize_embedding(embedding: np.ndarray) -> np.ndarray:
 class SpeakerMemoryStore:
     """Small synchronous store intended for one in-process pipeline."""
 
-    _SCHEMA_VERSION = 6
+    _SCHEMA_VERSION = 7
     _MAX_CENTROID_WEIGHT = 20.0
     _MAX_EVIDENCE_SCORE = 10.0
+    _MAX_VOICE_PROTOTYPES = 8
 
     def __init__(
         self,
@@ -107,6 +108,16 @@ class SpeakerMemoryStore:
                 created_at REAL NOT NULL,
                 last_seen REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS voice_prototypes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                voice_id TEXT NOT NULL REFERENCES voice_clusters(id) ON DELETE CASCADE,
+                embedding BLOB NOT NULL,
+                dimension INTEGER NOT NULL CHECK (dimension > 0),
+                quality REAL NOT NULL CHECK (quality >= 0),
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS voice_prototypes_voice_idx
+                ON voice_prototypes(voice_id, created_at DESC);
             CREATE TABLE IF NOT EXISTS voice_aliases (
                 source_voice_id TEXT PRIMARY KEY REFERENCES voice_clusters(id) ON DELETE CASCADE,
                 canonical_voice_id TEXT NOT NULL REFERENCES voice_clusters(id) ON DELETE CASCADE,
@@ -200,10 +211,21 @@ class SpeakerMemoryStore:
             COMMIT;
             """
         )
+        # Older databases only have a centroid.  Seed it as the first
+        # prototype so the max-similarity path is immediately useful after a
+        # migration and does not require users to re-enrol their voice.
+        self._connection.execute(
+            """INSERT INTO voice_prototypes(voice_id, embedding, dimension, quality, created_at)
+               SELECT c.id, c.centroid, c.dimension, c.quality_weight, c.created_at
+               FROM voice_clusters AS c
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM voice_prototypes AS p WHERE p.voice_id = c.id
+               )"""
+        )
         row = self._connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
         if row is None:
             self._connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (self._SCHEMA_VERSION,))
-        elif row["version"] in {1, 2, 3, 4, 5}:
+        elif row["version"] in {1, 2, 3, 4, 5, 6}:
             self._connection.execute("UPDATE schema_meta SET version = ?", (self._SCHEMA_VERSION,))
         elif row["version"] != self._SCHEMA_VERSION:
             raise RuntimeError(f"unsupported speaker-memory schema version: {row['version']}")
@@ -266,6 +288,7 @@ class SpeakerMemoryStore:
                    VALUES (?, ?, ?, 1, ?, ?, ?)""",
                 (cluster_id, vector.tobytes(), vector.size, float(quality), now, now),
             )
+            self._insert_voice_prototype(cluster_id, vector, quality=float(quality), created_at=now)
         return VoiceCluster(
             id=cluster_id,
             centroid=vector.copy(),
@@ -309,6 +332,64 @@ class SpeakerMemoryStore:
                    ORDER BY c.created_at, c.id"""
             ).fetchall()
         return [self._cluster_from_row(row) for row in rows]
+
+    def get_voice_prototypes(self, voice_id: str) -> list[np.ndarray]:
+        """Return bounded enrollment exemplars for a canonical voice.
+
+        Prototypes remain attached to source clusters after an alias merge;
+        resolving aliases here lets a canonical person benefit from all of the
+        explicitly linked utterances while an explicit rejection can detach
+        the source again without losing its acoustic history.
+        """
+
+        canonical_id = self.resolve_voice_id(voice_id)
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT embedding, dimension
+                   FROM voice_prototypes
+                   WHERE voice_id = ?
+                      OR voice_id IN (
+                          SELECT source_voice_id FROM voice_aliases
+                          WHERE canonical_voice_id = ?
+                      )
+                   ORDER BY created_at DESC, id DESC
+                   LIMIT ?""",
+                (canonical_id, canonical_id, self._MAX_VOICE_PROTOTYPES * 16),
+            ).fetchall()
+        prototypes: list[np.ndarray] = []
+        for row in rows:
+            vector = np.frombuffer(row["embedding"], dtype=np.float32, count=row["dimension"]).copy()
+            if vector.size:
+                prototypes.append(vector)
+        return prototypes
+
+    def _insert_voice_prototype(
+        self,
+        voice_id: str,
+        vector: np.ndarray,
+        *,
+        quality: float,
+        created_at: float,
+    ) -> None:
+        """Insert one normalized exemplar and retain only a small recent bank."""
+
+        self._connection.execute(
+            """INSERT INTO voice_prototypes(voice_id, embedding, dimension, quality, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (voice_id, vector.tobytes(), vector.size, float(quality), created_at),
+        )
+        stale = self._connection.execute(
+            """SELECT id FROM voice_prototypes
+               WHERE voice_id = ?
+               ORDER BY quality DESC, created_at DESC, id DESC
+               LIMIT -1 OFFSET ?""",
+            (voice_id, self._MAX_VOICE_PROTOTYPES),
+        ).fetchall()
+        if stale:
+            self._connection.executemany(
+                "DELETE FROM voice_prototypes WHERE id = ?",
+                [(row["id"],) for row in stale],
+            )
 
     def merge_voice_clusters(self, source_voice_id: str, target_voice_id: str, *, reason: str) -> str:
         """Merge one cluster into another while retaining a reversible alias audit."""
@@ -530,6 +611,7 @@ class SpeakerMemoryStore:
                     voice_id,
                 ),
             )
+            self._insert_voice_prototype(voice_id, vector, quality=float(quality), created_at=now)
         return VoiceCluster(
             id=voice_id,
             centroid=centroid,
