@@ -44,7 +44,7 @@ def normalize_embedding(embedding: np.ndarray) -> np.ndarray:
 class SpeakerMemoryStore:
     """Small synchronous store intended for one in-process pipeline."""
 
-    _SCHEMA_VERSION = 4
+    _SCHEMA_VERSION = 5
     _MAX_CENTROID_WEIGHT = 20.0
     _MAX_EVIDENCE_SCORE = 10.0
 
@@ -107,6 +107,15 @@ class SpeakerMemoryStore:
                 created_at REAL NOT NULL,
                 last_seen REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS voice_aliases (
+                source_voice_id TEXT PRIMARY KEY REFERENCES voice_clusters(id) ON DELETE CASCADE,
+                canonical_voice_id TEXT NOT NULL REFERENCES voice_clusters(id) ON DELETE CASCADE,
+                reason TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                CHECK (source_voice_id <> canonical_voice_id)
+            );
+            CREATE INDEX IF NOT EXISTS voice_aliases_canonical_idx
+                ON voice_aliases(canonical_voice_id);
             CREATE TABLE IF NOT EXISTS persons (
                 id TEXT PRIMARY KEY,
                 display_name TEXT NOT NULL,
@@ -185,7 +194,7 @@ class SpeakerMemoryStore:
         row = self._connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
         if row is None:
             self._connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (self._SCHEMA_VERSION,))
-        elif row["version"] in {1, 2, 3}:
+        elif row["version"] in {1, 2, 3, 4}:
             self._connection.execute("UPDATE schema_meta SET version = ?", (self._SCHEMA_VERSION,))
         elif row["version"] != self._SCHEMA_VERSION:
             raise RuntimeError(f"unsupported speaker-memory schema version: {row['version']}")
@@ -264,10 +273,137 @@ class SpeakerMemoryStore:
             raise KeyError(voice_id)
         return self._cluster_from_row(row)
 
+    def resolve_voice_id(self, voice_id: str) -> str:
+        """Resolve a historical voice ID to its current canonical cluster."""
+
+        current = voice_id
+        seen: set[str] = set()
+        with self._lock:
+            while current not in seen:
+                seen.add(current)
+                row = self._connection.execute(
+                    "SELECT canonical_voice_id FROM voice_aliases WHERE source_voice_id = ?",
+                    (current,),
+                ).fetchone()
+                if row is None:
+                    return current
+                current = str(row["canonical_voice_id"])
+        raise RuntimeError(f"voice alias cycle detected for {voice_id}")
+
     def get_voice_clusters(self) -> list[VoiceCluster]:
         with self._lock:
-            rows = self._connection.execute("SELECT * FROM voice_clusters ORDER BY created_at, id").fetchall()
+            rows = self._connection.execute(
+                """SELECT c.* FROM voice_clusters AS c
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM voice_aliases AS a WHERE a.source_voice_id = c.id
+                   )
+                   ORDER BY c.created_at, c.id"""
+            ).fetchall()
         return [self._cluster_from_row(row) for row in rows]
+
+    def merge_voice_clusters(self, source_voice_id: str, target_voice_id: str, *, reason: str) -> str:
+        """Merge one cluster into another while retaining a reversible alias audit."""
+
+        if not reason.strip():
+            raise ValueError("voice merge reason must not be empty")
+        with self._transaction():
+            source_id = self.resolve_voice_id(source_voice_id)
+            target_id = self.resolve_voice_id(target_voice_id)
+            if source_id == target_id:
+                return target_id
+            source_row = self._connection.execute(
+                "SELECT * FROM voice_clusters WHERE id = ?", (source_id,)
+            ).fetchone()
+            target_row = self._connection.execute(
+                "SELECT * FROM voice_clusters WHERE id = ?", (target_id,)
+            ).fetchone()
+            if source_row is None or target_row is None:
+                raise KeyError(source_id if source_row is None else target_id)
+            source = self._cluster_from_row(source_row)
+            target = self._cluster_from_row(target_row)
+            if source.centroid.size != target.centroid.size:
+                raise InvalidEmbedding("speaker embedding dimensions do not match for merge")
+            source_weight = min(source.quality_weight, self._MAX_CENTROID_WEIGHT)
+            target_weight = min(target.quality_weight, self._MAX_CENTROID_WEIGHT)
+            total_weight = min(source_weight + target_weight, self._MAX_CENTROID_WEIGHT)
+            centroid = normalize_embedding(
+                source.centroid * source_weight + target.centroid * target_weight
+            )
+            now = self.clock()
+            self._connection.execute(
+                """UPDATE voice_clusters
+                   SET centroid = ?, sample_count = ?, quality_weight = ?, last_seen = ?
+                   WHERE id = ?""",
+                (
+                    centroid.tobytes(),
+                    source.sample_count + target.sample_count,
+                    total_weight,
+                    max(source.last_seen, target.last_seen, now),
+                    target_id,
+                ),
+            )
+            # Flatten any aliases that pointed at either cluster, then record
+            # the source alias itself. Evidence remains attached to its source
+            # row for audit and is aggregated through this alias.
+            self._connection.execute(
+                "UPDATE voice_aliases SET canonical_voice_id = ? WHERE canonical_voice_id IN (?, ?)",
+                (target_id, source_id, target_id),
+            )
+            self._connection.execute(
+                """INSERT INTO voice_aliases
+                   (source_voice_id, canonical_voice_id, reason, created_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(source_voice_id) DO UPDATE SET
+                       canonical_voice_id = excluded.canonical_voice_id,
+                       reason = excluded.reason,
+                       created_at = excluded.created_at""",
+                (source_id, target_id, reason.strip()[:120], now),
+            )
+        return target_id
+
+    def detach_voice_alias(self, voice_id: str) -> bool:
+        """Detach a source cluster from its canonical voice after an explicit rejection."""
+
+        with self._transaction():
+            cursor = self._connection.execute(
+                "DELETE FROM voice_aliases WHERE source_voice_id = ?", (voice_id,)
+            )
+        return bool(cursor.rowcount)
+
+    def merge_voice_with_person(self, voice_id: str, person_id: str, *, reason: str) -> str:
+        """Safely merge a newly confirmed voice into that person's strongest cluster."""
+
+        current_id = self.resolve_voice_id(voice_id)
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT DISTINCT e.voice_id
+                   FROM voice_person_evidence AS e
+                   WHERE e.person_id = ?""",
+                (person_id,),
+            ).fetchall()
+        candidates: list[VoiceCluster] = []
+        for row in rows:
+            candidate_id = self.resolve_voice_id(str(row["voice_id"]))
+            if candidate_id == current_id:
+                continue
+            try:
+                candidate_cluster = self.get_voice_cluster(candidate_id)
+            except KeyError:
+                continue
+            person_score = next(
+                (
+                    candidate.evidence_score
+                    for candidate in self.resolve_person_candidates(candidate_id)
+                    if candidate.person_id == person_id
+                ),
+                0.0,
+            )
+            if person_score > 0:
+                candidates.append(candidate_cluster)
+        if not candidates:
+            return current_id
+        target = max(candidates, key=lambda cluster: (cluster.sample_count, cluster.quality_weight, -cluster.created_at))
+        return self.merge_voice_clusters(current_id, target.id, reason=reason)
 
     def set_voice_blocked(self, voice_id: str, *, blocked: bool, reason: str | None = None) -> None:
         """Persist a voice-routing decision without exposing its embedding."""
@@ -459,6 +595,7 @@ class SpeakerMemoryStore:
         return SpeakerReference(
             value=row["ref"],
             observation_id=row["observation_id"],
+            # Keep the raw ID here: reject can detach the exact source cluster.
             voice_id=row["voice_id"],
             conversation_id=row["conversation_id"],
             expires_at=row["expires_at"],
@@ -532,6 +669,7 @@ class SpeakerMemoryStore:
             )
 
     def resolve_person_candidates(self, voice_id: str) -> list[PersonCandidate]:
+        canonical_id = self.resolve_voice_id(voice_id)
         with self._lock:
             rows = self._connection.execute(
                 """SELECT p.id AS person_id, p.display_name,
@@ -539,9 +677,13 @@ class SpeakerMemoryStore:
                    FROM voice_person_evidence AS e
                    JOIN persons AS p ON p.id = e.person_id
                    WHERE e.voice_id = ?
+                      OR e.voice_id IN (
+                          SELECT source_voice_id FROM voice_aliases
+                          WHERE canonical_voice_id = ?
+                      )
                    GROUP BY p.id, p.display_name
                    ORDER BY evidence_score DESC, p.id""",
-                (-self._MAX_EVIDENCE_SCORE, self._MAX_EVIDENCE_SCORE, voice_id),
+                (-self._MAX_EVIDENCE_SCORE, self._MAX_EVIDENCE_SCORE, canonical_id, canonical_id),
             ).fetchall()
         return [
             PersonCandidate(

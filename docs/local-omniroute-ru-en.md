@@ -213,10 +213,10 @@ embedding+clustering не превышает 100 мс. Пороги предва
 ## Проверка исходников
 
 ```bash
-uv run pytest -q tests/test_local_bootstrap_config.py tests/test_local_arbiter_integration.py
+uv run pytest -q tests/test_local_arbiter_integration.py tests/test_acoustic_loopback_smoke.py
 uv run ruff check src/speech_to_speech/LLM \
   src/speech_to_speech/arguments_classes/responses_api_language_model_arguments.py \
-  tests/test_local_bootstrap_config.py tests/test_local_arbiter_integration.py
+  tests/test_local_arbiter_integration.py tests/test_acoustic_loopback_smoke.py
 bash -n scripts/*.sh
 systemd-analyze --user verify deploy/systemd/*.service
 git diff --check

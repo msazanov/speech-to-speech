@@ -202,6 +202,8 @@ class SpeakerTracker:
         if not candidates:
             return SpeakerState.UNKNOWN, None
         top = candidates[0]
+        if top.evidence_score < 0:
+            return SpeakerState.UNKNOWN, None
         runner_score = candidates[1].evidence_score if len(candidates) > 1 else float("-inf")
         if top.evidence_score >= self.identity_threshold and top.evidence_score - runner_score >= self.identity_margin:
             return SpeakerState.KNOWN, top

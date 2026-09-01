@@ -173,7 +173,7 @@ def test_service_uses_fixed_semantic_evidence_weights(store: SpeakerMemoryStore)
 
     candidates = store.resolve_person_candidates(first.voice_id)
     assert candidates[0].name == "Аркадий"
-    assert candidates[0].evidence_score == pytest.approx(2.0)
+    assert candidates[0].evidence_score == pytest.approx(1.0)
 
 
 def test_replayed_confirmation_is_idempotent_for_same_observation(store: SpeakerMemoryStore) -> None:
@@ -217,4 +217,16 @@ def test_similar_new_voice_gets_known_person_as_clarification_candidate(store: S
     linked = SpeakerMemoryService(store).remember_name(second.speaker_ref, "Михаил", conversation_id="conv_1")
     assert linked.candidate is not None
     assert linked.candidate.person_id == person.id
-    assert len(store.get_voice_clusters()) == 2
+    assert linked.voice_id == first.voice_id
+    assert store.resolve_voice_id(second.voice_id) == first.voice_id
+
+    # A later explicit rejection detaches only this newly merged source and
+    # forces clarification instead of leaking the canonical person's memory.
+    rejected = SpeakerMemoryService(store).reject(
+        second.speaker_ref,
+        person.id,
+        conversation_id="conv_1",
+    )
+    assert rejected.state is SpeakerState.UNKNOWN
+    assert rejected.voice_id == second.voice_id
+    assert store.resolve_voice_id(second.voice_id) == second.voice_id

@@ -91,7 +91,7 @@ async def test_remember_and_reject_use_fixed_evidence_without_automatic_followup
     assert isinstance(remembered, ToolResult)
     assert remembered.create_response is False
     assert rejected.create_response is False
-    assert store.resolve_person_candidates(attributed.voice_id)[0].evidence_score == pytest.approx(0.0)
+    assert store.resolve_person_candidates(attributed.voice_id)[0].evidence_score == pytest.approx(-1.0)
 
 
 @pytest.mark.asyncio
