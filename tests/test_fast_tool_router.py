@@ -11,6 +11,8 @@ TOOLS = [
     {"type": "function", "name": "speaker_memory_remember_name"},
     {"type": "function", "name": "speaker_memory_remember_fact"},
     {"type": "function", "name": "speaker_memory_recall"},
+    {"type": "function", "name": "speaker_memory_confirm"},
+    {"type": "function", "name": "speaker_memory_reject"},
 ]
 
 
@@ -35,6 +37,20 @@ def test_routes_name_introduction_using_only_trusted_reference() -> None:
     assert recall is not None and recall.name == "speaker_memory_recall"
     assert json.loads(recall.arguments) == {"speaker_ref": "sr_trusted", "query": "Как меня зовут?"}
     assert route_fast_tool("Меня зовут Михаил", TOOLS) is None
+
+    candidate_context = {
+        "speaker_ref": "sr_trusted",
+        "voice_id": "v_1",
+        "state": "conflict",
+        "candidate": {"person_id": "p_1", "name": "Михаил"},
+    }
+    prefix = f"<huggingvoice_speaker_context>{json.dumps(candidate_context)}</huggingvoice_speaker_context>\n"
+    confirmed = route_fast_tool(prefix + "Да", TOOLS)
+    assert confirmed is not None and confirmed.name == "speaker_memory_confirm"
+    assert json.loads(confirmed.arguments) == {"speaker_ref": "sr_trusted", "person_id": "p_1"}
+    rejected = route_fast_tool(prefix + "Нет, это не я", TOOLS)
+    assert rejected is not None and rejected.name == "speaker_memory_reject"
+    assert json.loads(rejected.arguments) == {"speaker_ref": "sr_trusted", "person_id": "p_1"}
 
 
 def test_routes_web_search_without_inventing_speaker_reference() -> None:

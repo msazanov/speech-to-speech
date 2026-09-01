@@ -56,7 +56,7 @@ def _tool_names(tools: Iterable[Any] | None) -> set[str]:
     return names
 
 
-def _speaker_context(text: str) -> tuple[str | None, str]:
+def _speaker_context_data(text: str) -> tuple[dict[str, Any] | None, str]:
     start = text.find(_CONTEXT_OPEN)
     if start < 0:
         return None, text.strip()
@@ -68,10 +68,17 @@ def _speaker_context(text: str) -> tuple[str | None, str]:
         payload = json.loads(raw)
     except (TypeError, ValueError):
         return None, text[end + len(_CONTEXT_CLOSE) :].strip()
-    reference = payload.get("speaker_ref") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        payload = None
+    return payload, text[end + len(_CONTEXT_CLOSE) :].strip()
+
+
+def _speaker_context(text: str) -> tuple[str | None, str]:
+    payload, utterance = _speaker_context_data(text)
+    reference = payload.get("speaker_ref") if payload is not None else None
     if not isinstance(reference, str) or not reference.strip():
         reference = None
-    return reference, text[end + len(_CONTEXT_CLOSE) :].strip()
+    return reference, utterance
 
 
 def _call(name: str, arguments: dict[str, Any]) -> ResponseFunctionToolCall:
@@ -111,9 +118,48 @@ def route_fast_tool(text: str, tools: Iterable[Any] | None) -> ResponseFunctionT
     """Return one explicit local tool call, or ``None`` for ordinary text."""
 
     names = _tool_names(tools)
-    speaker_ref, utterance = _speaker_context(text)
+    context, utterance = _speaker_context_data(text)
+    speaker_ref = context.get("speaker_ref") if context is not None else None
+    if not isinstance(speaker_ref, str) or not speaker_ref.strip():
+        speaker_ref = None
     if not utterance:
         return None
+
+    candidate = context.get("candidate") if context is not None else None
+    person_id = candidate.get("person_id") if isinstance(candidate, Mapping) else None
+    state = context.get("state") if context is not None else None
+    if (
+        speaker_ref
+        and isinstance(person_id, str)
+        and person_id.strip()
+        and state in {"ambiguous", "conflict"}
+        and "speaker_memory_confirm" in names
+        and re.match(
+            r"^\s*(?:да|угу|верно|правильно|точно|это\s+я|yes|correct|right|that's\s+me)\s*[.!?]*\s*$",
+            utterance,
+            flags=re.IGNORECASE,
+        )
+    ):
+        return _call(
+            "speaker_memory_confirm",
+            {"speaker_ref": speaker_ref, "person_id": person_id},
+        )
+    if (
+        speaker_ref
+        and isinstance(person_id, str)
+        and person_id.strip()
+        and state in {"ambiguous", "conflict"}
+        and "speaker_memory_reject" in names
+        and re.match(
+            r"^\s*(?:нет(?:\s*,?\s*(?:не\s+я|это\s+не\s+я))?|не\s+я|это\s+не\s+я|неправильно|ошибка|no|not\s+me|wrong)\s*[.!?]*\s*$",
+            utterance,
+            flags=re.IGNORECASE,
+        )
+    ):
+        return _call(
+            "speaker_memory_reject",
+            {"speaker_ref": speaker_ref, "person_id": person_id},
+        )
 
     if speaker_ref and "speaker_memory_remember_name" in names:
         match = re.match(
