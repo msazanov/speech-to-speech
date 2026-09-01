@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 
-from .models import PersonCandidate, SpeakerAttribution, SpeakerState
+from .models import PersonCandidate, SpeakerAttribution, SpeakerState, VoiceCluster
 from .store import SpeakerMemoryStore, normalize_embedding
 
 
@@ -28,6 +28,8 @@ class SpeakerTracker:
         soft_match_threshold: float = 0.60,
         soft_match_min_samples: int = 3,
         soft_match_weight: float = 0.25,
+        automerge_threshold: float = 0.82,
+        automerge_min_samples: int = 3,
     ) -> None:
         if not 0 <= candidate_threshold <= match_threshold <= 1:
             raise ValueError("voice thresholds must satisfy 0 <= candidate <= match <= 1")
@@ -39,6 +41,10 @@ class SpeakerTracker:
             raise ValueError("soft match minimum samples must be at least 1")
         if not 0 < soft_match_weight <= 1:
             raise ValueError("soft match weight must be in (0, 1]")
+        if not match_threshold <= automerge_threshold <= 1:
+            raise ValueError("automerge threshold must satisfy match <= automerge <= 1")
+        if automerge_min_samples < 2:
+            raise ValueError("automerge minimum samples must be at least 2")
         self.store = store
         self.match_threshold = match_threshold
         self.candidate_threshold = candidate_threshold
@@ -51,6 +57,8 @@ class SpeakerTracker:
         self.soft_match_threshold = soft_match_threshold
         self.soft_match_min_samples = soft_match_min_samples
         self.soft_match_weight = soft_match_weight
+        self.automerge_threshold = automerge_threshold
+        self.automerge_min_samples = automerge_min_samples
 
     def observe(
         self,
@@ -73,11 +81,12 @@ class SpeakerTracker:
         compatible_clusters = [
             cluster for cluster in self.store.get_voice_clusters() if cluster.centroid.size == vector.size
         ]
-        scored = sorted(
-            ((cluster, float(np.dot(vector, cluster.centroid))) for cluster in compatible_clusters),
-            key=lambda item: item[1],
-            reverse=True,
-        )
+        scored = self._score_clusters(vector, compatible_clusters)
+        if self._automerge_unassigned(scored):
+            compatible_clusters = [
+                cluster for cluster in self.store.get_voice_clusters() if cluster.centroid.size == vector.size
+            ]
+            scored = self._score_clusters(vector, compatible_clusters)
         top_score = scored[0][1] if scored else -1.0
         runner_up = scored[1][1] if len(scored) > 1 else -1.0
         voice_margin = top_score - runner_up
@@ -178,6 +187,50 @@ class SpeakerTracker:
     def _top_candidate(self, voice_id: str) -> PersonCandidate | None:
         candidates = self.store.resolve_person_candidates(voice_id)
         return candidates[0] if candidates else None
+
+    @staticmethod
+    def _score_clusters(
+        vector: np.ndarray,
+        clusters: list[VoiceCluster],
+    ) -> list[tuple[VoiceCluster, float]]:
+        return sorted(
+            ((cluster, float(np.dot(vector, cluster.centroid))) for cluster in clusters),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+
+    def _automerge_unassigned(self, scored: list[tuple[VoiceCluster, float]]) -> bool:
+        """Consolidate mature, unassigned duplicates without granting identity."""
+
+        eligible = [
+            (cluster, similarity)
+            for cluster, similarity in scored
+            if similarity >= self.automerge_threshold
+            and cluster.sample_count >= self.automerge_min_samples
+            and not self.store.resolve_person_candidates(cluster.id)
+            and not self.store.is_voice_blocked(cluster.id)
+        ]
+        if len(eligible) < 2:
+            return False
+        # Keep the oldest/most-sampled cluster as the canonical ID so a noisy
+        # new cluster cannot replace a stable identifier merely by scoring a
+        # few hundredths higher on this turn.
+        target, _ = max(
+            eligible,
+            key=lambda item: (item[0].sample_count, item[0].quality_weight, -item[0].created_at),
+        )
+        merged = False
+        for source, _ in eligible:
+            if source.id == target.id:
+                continue
+            self.store.merge_voice_clusters(
+                source.id,
+                target.id,
+                reason="high_similarity_unassigned_clusters",
+            )
+            target = self.store.get_voice_cluster(target.id)
+            merged = True
+        return merged
 
     def _group_candidate(self, vector: np.ndarray, *, excluded_voice_id: str | None) -> PersonCandidate | None:
         """Suggest a person from a nearby cluster without merging voice IDs."""

@@ -47,6 +47,14 @@ class SpeakerMemoryArguments:
         default=0.25,
         metadata={"help": "Centroid update weight for a weak reusable match. Default is conservative."},
     )
+    speaker_memory_automerge_threshold: float = field(
+        default=0.82,
+        metadata={"help": "Cosine threshold for merging mature unassigned voice clusters."},
+    )
+    speaker_memory_automerge_min_samples: int = field(
+        default=3,
+        metadata={"help": "Minimum samples in each unassigned cluster before automatic merging."},
+    )
     speaker_memory_ambiguity_margin: float = field(
         default=0.08,
         metadata={"help": "Minimum cosine margin over the runner-up voice cluster."},

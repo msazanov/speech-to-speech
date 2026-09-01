@@ -24,6 +24,8 @@
   "speaker_memory_soft_match_threshold": 0.60,
   "speaker_memory_soft_match_min_samples": 3,
   "speaker_memory_soft_match_weight": 0.25,
+  "speaker_memory_automerge_threshold": 0.82,
+  "speaker_memory_automerge_min_samples": 3,
   "speaker_memory_ambiguity_margin": 0.08,
   "speaker_memory_reference_ttl_s": 300.0,
   "model_name": "gemma-4-e2b",
