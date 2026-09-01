@@ -68,11 +68,23 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
         audio = np.asarray(vad_audio.audio, dtype=np.float32).reshape(-1)
         duration_ms = audio.size * 1000 / self.sample_rate
         if duration_ms < self.min_audio_ms:
+            logger.info(
+                "Speaker attribution skipped reason=short_audio duration_ms=%.1f min_audio_ms=%d",
+                duration_ms,
+                self.min_audio_ms,
+            )
             yield self._unknown(vad_audio)
             return
 
         quality = self._quality(audio)
-        if quality < getattr(self.tracker, "minimum_quality", 0.5):
+        minimum_quality = getattr(self.tracker, "minimum_quality", 0.5)
+        if quality < minimum_quality:
+            logger.info(
+                "Speaker attribution skipped reason=low_signal duration_ms=%.1f quality=%.3f minimum_quality=%.3f",
+                duration_ms,
+                quality,
+                minimum_quality,
+            )
             yield self._unknown(vad_audio)
             return
 
