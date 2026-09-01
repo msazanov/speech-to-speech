@@ -64,6 +64,28 @@ def test_decisive_match_reuses_voice_and_updates_centroid(store: SpeakerMemorySt
     assert np.linalg.norm(updated.centroid) == pytest.approx(1.0)
 
 
+def test_mature_unassigned_cluster_reuses_weak_match_and_refines_centroid(
+    store: SpeakerMemoryStore,
+) -> None:
+    memory_tracker = tracker(
+        store,
+        soft_match_threshold=0.60,
+        soft_match_min_samples=2,
+        soft_match_weight=0.25,
+    )
+    first = observe(memory_tracker, unit([1.0, 0.0]))
+    observe(memory_tracker, unit([0.98, 0.20]), turn_id="turn_2")
+    before = store.get_voice_cluster(first.voice_id)
+
+    weak = observe(memory_tracker, unit([0.60, 0.80]), turn_id="turn_3")
+    after = store.get_voice_cluster(first.voice_id)
+
+    assert weak.voice_id == first.voice_id
+    assert weak.state is SpeakerState.UNKNOWN
+    assert after.sample_count == before.sample_count + 1
+    assert not np.array_equal(after.centroid, before.centroid)
+
+
 def test_decisive_match_to_blacklisted_voice_is_rejected_without_centroid_drift(
     store: SpeakerMemoryStore,
 ) -> None:

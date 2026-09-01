@@ -25,11 +25,20 @@ class SpeakerTracker:
         identity_threshold: float = 2.0,
         identity_margin: float = 0.75,
         group_threshold: float = 0.55,
+        soft_match_threshold: float = 0.60,
+        soft_match_min_samples: int = 3,
+        soft_match_weight: float = 0.25,
     ) -> None:
         if not 0 <= candidate_threshold <= match_threshold <= 1:
             raise ValueError("voice thresholds must satisfy 0 <= candidate <= match <= 1")
         if not 0 <= group_threshold <= candidate_threshold:
             raise ValueError("voice group threshold must satisfy 0 <= group <= candidate")
+        if not group_threshold <= soft_match_threshold <= candidate_threshold:
+            raise ValueError("soft match threshold must satisfy group <= soft <= candidate")
+        if soft_match_min_samples < 1:
+            raise ValueError("soft match minimum samples must be at least 1")
+        if not 0 < soft_match_weight <= 1:
+            raise ValueError("soft match weight must be in (0, 1]")
         self.store = store
         self.match_threshold = match_threshold
         self.candidate_threshold = candidate_threshold
@@ -39,6 +48,9 @@ class SpeakerTracker:
         self.identity_threshold = identity_threshold
         self.identity_margin = identity_margin
         self.group_threshold = group_threshold
+        self.soft_match_threshold = soft_match_threshold
+        self.soft_match_min_samples = soft_match_min_samples
+        self.soft_match_weight = soft_match_weight
 
     def observe(
         self,
@@ -70,10 +82,41 @@ class SpeakerTracker:
         runner_up = scored[1][1] if len(scored) > 1 else -1.0
         voice_margin = top_score - runner_up
         if not scored or top_score < self.candidate_threshold:
-            voice = self.store.create_voice_cluster(vector, quality=quality)
-            group_candidate = self._group_candidate(vector, excluded_voice_id=voice.id)
-            acoustic_state = SpeakerState.UNKNOWN
-            reported_margin: float | None = None
+            top_cluster = scored[0][0] if scored else None
+            # A mature, still-unassigned cluster can absorb a weak outlier with
+            # a very small update. This prevents one short/noisy turn from
+            # creating a new ID on every utterance, while keeping uncertain
+            # samples out of confirmed-person memory. Clusters with identity
+            # evidence deliberately stay on the conservative candidate path.
+            soft_match = (
+                top_cluster is not None
+                and top_score >= self.soft_match_threshold
+                and top_cluster.sample_count >= self.soft_match_min_samples
+                and voice_margin >= self.ambiguity_margin
+                and not self.store.resolve_person_candidates(top_cluster.id)
+            )
+            if soft_match:
+                if self.store.is_voice_blocked(top_cluster.id):
+                    return SpeakerAttribution(
+                        voice_id=top_cluster.id,
+                        state=SpeakerState.BLACKLISTED,
+                        recommendation="do_not_learn",
+                        margin=voice_margin,
+                        speaker_ms=(time.perf_counter() - started) * 1000,
+                    )
+                voice = self.store.update_voice_cluster(
+                    top_cluster.id,
+                    vector,
+                    quality=quality * self.soft_match_weight,
+                )
+                group_candidate = None
+                acoustic_state = SpeakerState.UNKNOWN
+                reported_margin = voice_margin
+            else:
+                voice = self.store.create_voice_cluster(vector, quality=quality)
+                group_candidate = self._group_candidate(vector, excluded_voice_id=voice.id)
+                acoustic_state = SpeakerState.UNKNOWN
+                reported_margin = None
         elif top_score < self.match_threshold or voice_margin < self.ambiguity_margin:
             voice = scored[0][0]
             group_candidate = None

@@ -389,6 +389,9 @@ def _build_speaker_memory_handler(
             match_threshold=arguments.speaker_memory_match_threshold,
             candidate_threshold=arguments.speaker_memory_candidate_threshold,
             group_threshold=arguments.speaker_memory_group_threshold,
+            soft_match_threshold=arguments.speaker_memory_soft_match_threshold,
+            soft_match_min_samples=arguments.speaker_memory_soft_match_min_samples,
+            soft_match_weight=arguments.speaker_memory_soft_match_weight,
             ambiguity_margin=arguments.speaker_memory_ambiguity_margin,
             reference_ttl_s=arguments.speaker_memory_reference_ttl_s,
         )
