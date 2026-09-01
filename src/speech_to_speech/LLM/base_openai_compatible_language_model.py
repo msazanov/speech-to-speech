@@ -729,6 +729,42 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             update={"arguments": json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))}
         )
 
+    @staticmethod
+    def _forced_tool_ack(item: ResponseFunctionToolCall, language_code: str | None) -> str:
+        """Return a short local acknowledgement for mutation-only fast tools.
+
+        These calls deliberately do not schedule a second model response.  A
+        fast route must still leave the user with audible feedback, so keep the
+        acknowledgement deterministic and tiny instead of paying another LLM
+        turn just to say that a write succeeded.
+        """
+
+        if not item.name.startswith("speaker_memory_"):
+            return ""
+        try:
+            arguments = json.loads(item.arguments or "{}")
+        except (TypeError, ValueError):
+            arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        english = (language_code or "").casefold().startswith("en")
+        name = arguments.get("name")
+        if item.name == "speaker_memory_remember_name" and isinstance(name, str) and name.strip():
+            return f"Nice to meet you, {name.strip()}. I remembered your name." if english else f"Приятно познакомиться, {name.strip()}. Я запомнил ваше имя."
+        if item.name == "speaker_memory_remember_fact":
+            return "Got it, I remembered that." if english else "Хорошо, я это запомнил."
+        if item.name == "speaker_memory_confirm":
+            return "Confirmed, I will remember this voice." if english else "Подтверждено, я запомнил этот голос."
+        if item.name == "speaker_memory_reject":
+            return "Understood, I will not link this voice." if english else "Понял, не буду связывать этот голос."
+        if item.name == "speaker_memory_block_voice":
+            return "Understood, I will ignore this voice." if english else "Понял, буду игнорировать этот голос."
+        if item.name == "speaker_memory_unblock_voice":
+            return "This voice is enabled again." if english else "Голос снова учитывается."
+        if item.name == "speaker_memory_forget":
+            return "Done, I removed that memory." if english else "Готово, я удалил эту запись из памяти."
+        return ""
+
     # ── consumption ─────────────────────────────────────────────────────────--
 
     def _consume_streaming(
@@ -946,7 +982,19 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     if turn.forced_tool_call is not None:
                         provider_request_started = True
                         provider_started_at_s = perf_counter()
-                        events = iter((ToolCall(item=turn.forced_tool_call),))
+                        forced_ack = self._forced_tool_ack(turn.forced_tool_call, turn.language_code)
+                        forced_events: list[ProviderEvent] = []
+                        if forced_ack:
+                            forced_events.extend(
+                                (
+                                    AssistantMessage(
+                                        content=[AssistantContent(type="output_text", text=forced_ack)]
+                                    ),
+                                    TextDelta(text=forced_ack),
+                                )
+                            )
+                        forced_events.append(ToolCall(item=turn.forced_tool_call))
+                        events = iter(forced_events)
                     elif turn.prefetch_transaction is not None:
                         events = self._iter_prefetch_events_interruptibly(
                             make_request,
