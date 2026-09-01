@@ -86,6 +86,22 @@ def test_mature_unassigned_cluster_reuses_weak_match_and_refines_centroid(
     assert not np.array_equal(after.centroid, before.centroid)
 
 
+def test_matching_uses_enrollment_prototype_when_centroid_is_between_styles(
+    store: SpeakerMemoryStore,
+) -> None:
+    memory_tracker = tracker(store)
+    first = observe(memory_tracker, unit([1.0, 0.0]))
+    # A second speaking style pulls the centroid away from the first sample.
+    for _ in range(4):
+        store.update_voice_cluster(first.voice_id, unit([0.0, 1.0]), quality=1.0)
+
+    result = observe(memory_tracker, unit([0.95, 0.31]), turn_id="turn_style_a")
+
+    assert result.voice_id == first.voice_id
+    assert result.state is SpeakerState.UNKNOWN
+    assert store.get_voice_cluster(first.voice_id).sample_count == 6
+
+
 def test_decisive_match_to_blacklisted_voice_is_rejected_without_centroid_drift(
     store: SpeakerMemoryStore,
 ) -> None:

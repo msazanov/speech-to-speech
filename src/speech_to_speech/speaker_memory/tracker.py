@@ -130,10 +130,40 @@ class SpeakerTracker:
                 acoustic_state = SpeakerState.UNKNOWN
                 reported_margin = None
         elif top_score < self.match_threshold or voice_margin < self.ambiguity_margin:
-            voice = scored[0][0]
-            group_candidate = None
-            acoustic_state = SpeakerState.AMBIGUOUS
-            reported_margin = voice_margin
+            top_cluster = scored[0][0]
+            # A prototype can be a strong match even while the adaptive
+            # centroid sits between two speaking styles.  For an unassigned
+            # cluster, absorb this sample softly instead of creating a new
+            # ambiguity; a cluster already linked to a person remains on the
+            # conservative clarification path.
+            soft_match = (
+                top_score >= self.soft_match_threshold
+                and top_cluster.sample_count >= self.soft_match_min_samples
+                and voice_margin >= self.ambiguity_margin
+                and not self.store.resolve_person_candidates(top_cluster.id)
+            )
+            if soft_match:
+                if self.store.is_voice_blocked(top_cluster.id):
+                    return SpeakerAttribution(
+                        voice_id=top_cluster.id,
+                        state=SpeakerState.BLACKLISTED,
+                        recommendation="do_not_learn",
+                        margin=voice_margin,
+                        speaker_ms=(time.perf_counter() - started) * 1000,
+                    )
+                voice = self.store.update_voice_cluster(
+                    top_cluster.id,
+                    vector,
+                    quality=quality * self.soft_match_weight,
+                )
+                group_candidate = None
+                acoustic_state = SpeakerState.UNKNOWN
+                reported_margin = voice_margin
+            else:
+                voice = top_cluster
+                group_candidate = None
+                acoustic_state = SpeakerState.AMBIGUOUS
+                reported_margin = voice_margin
         else:
             group_candidate = None
             if self.store.is_voice_blocked(scored[0][0].id):
@@ -207,16 +237,30 @@ class SpeakerTracker:
         candidates = self.store.resolve_person_candidates(voice_id)
         return candidates[0] if candidates else None
 
-    @staticmethod
     def _score_clusters(
+        self,
         vector: np.ndarray,
         clusters: list[VoiceCluster],
     ) -> list[tuple[VoiceCluster, float]]:
         return sorted(
-            ((cluster, float(np.dot(vector, cluster.centroid))) for cluster in clusters),
+            ((cluster, self._cluster_similarity(vector, cluster)) for cluster in clusters),
             key=lambda item: item[1],
             reverse=True,
         )
+
+    def _cluster_similarity(self, vector: np.ndarray, cluster: VoiceCluster) -> float:
+        """Score a sample against a bounded enrollment bank plus its centroid.
+
+        A single centroid can sit between accents, microphones, or speaking
+        styles and make two utterances from the same person look unrelated.
+        Keeping a few normalized exemplars preserves those modes without
+        unbounded memory or a new ID for every short/noisy turn.
+        """
+
+        prototypes = self.store.get_voice_prototypes(cluster.id)
+        if not prototypes:
+            return float(np.dot(vector, cluster.centroid))
+        return max(float(np.dot(vector, prototype)) for prototype in [cluster.centroid, *prototypes])
 
     def _automerge_unassigned(self, scored: list[tuple[VoiceCluster, float]]) -> bool:
         """Consolidate mature, unassigned duplicates without granting identity."""
@@ -263,7 +307,7 @@ class SpeakerTracker:
         for cluster in self.store.get_voice_clusters():
             if cluster.id == excluded_voice_id or cluster.centroid.size != vector.size:
                 continue
-            similarity = float(np.dot(vector, cluster.centroid))
+            similarity = self._cluster_similarity(vector, cluster)
             if similarity < self.group_threshold:
                 continue
             candidates = self.store.resolve_person_candidates(cluster.id)

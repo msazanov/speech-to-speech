@@ -22,6 +22,31 @@ _CONTEXT_OPEN = "<huggingvoice_speaker_context>"
 _CONTEXT_CLOSE = "</huggingvoice_speaker_context>"
 _MAX_FIELD_LENGTH = 200
 _MAX_NAME_WORDS = 4
+_INTRO_STOP_WORDS = frozenset(
+    {
+        # Avoid turning ordinary first-person sentences into a name when STT
+        # emits the compact form "я хочу..." / "I'm trying...".
+        "это",
+        "я",
+        "хочу",
+        "могу",
+        "буду",
+        "тут",
+        "здесь",
+        "привет",
+        "нужно",
+        "надо",
+        "давай",
+        "тебе",
+        "тебя",
+        "here",
+        "there",
+        "trying",
+        "going",
+        "just",
+        "the",
+    }
+)
 _NAME_STOP_WORDS = frozenset(
     {
         # STT often removes punctuation, so stop an introduction before the
@@ -103,6 +128,8 @@ def _intro_name(value: str) -> str:
     """Extract a short name from a punctuation-free STT introduction."""
 
     words = _clean(value).split()
+    if not words or words[0].casefold().strip(".,!?;:") in _INTRO_STOP_WORDS:
+        return ""
     selected: list[str] = []
     for word in words:
         normalized = word.casefold().strip(".,!?;:")
@@ -163,7 +190,7 @@ def route_fast_tool(text: str, tools: Iterable[Any] | None) -> ResponseFunctionT
 
     if speaker_ref and "speaker_memory_remember_name" in names:
         match = re.match(
-            r"^\s*(?:меня\s+зовут|зовут\s+меня|my\s+name\s+is|call\s+me)\s+(.+?)\s*[.!?]*\s*$",
+            r"^\s*(?:меня\s+зовут|зовут\s+меня|мо[её]\s+имя(?:\s*[-—–:]\s*)?|я(?:\s+это)?|my\s+name\s+is|call\s+me|i(?:\s+am|'m))\s+(.+?)\s*[.!?]*\s*$",
             utterance,
             flags=re.IGNORECASE,
         )
