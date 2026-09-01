@@ -222,6 +222,7 @@ def test_similar_new_voice_gets_known_person_as_clarification_candidate(store: S
 
     # A later explicit rejection detaches only this newly merged source and
     # forces clarification instead of leaking the canonical person's memory.
+    store.add_identity_evidence(second.voice_id, person.id, kind="passive_match", weight=10.0)
     rejected = SpeakerMemoryService(store).reject(
         second.speaker_ref,
         person.id,

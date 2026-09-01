@@ -81,6 +81,7 @@ class SpeakerMemoryService:
             person_id = created.id
         else:
             person_id = person.person_id
+        self.store.clear_voice_person_block(reference.voice_id, person_id)
         self.store.add_identity_evidence(
             reference.voice_id,
             person_id,
@@ -192,6 +193,7 @@ class SpeakerMemoryService:
             observation_id=reference.observation_id,
         )
         if kind == "agent_confirmation":
+            self.store.clear_voice_person_block(reference.voice_id, person_id)
             self.store.merge_voice_with_person(
                 reference.voice_id,
                 person_id,
@@ -201,6 +203,11 @@ class SpeakerMemoryService:
             # Keep this source cluster independent from the previously linked
             # canonical voice, then let the strong negative evidence force a
             # fresh clarification on the next turn.
+            self.store.block_voice_person(
+                reference.voice_id,
+                person_id,
+                reason="explicit speaker rejection",
+            )
             self.store.detach_voice_alias(reference.voice_id)
         return self.inspect(speaker_ref, conversation_id=conversation_id)
 

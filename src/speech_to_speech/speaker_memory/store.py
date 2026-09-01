@@ -44,7 +44,7 @@ def normalize_embedding(embedding: np.ndarray) -> np.ndarray:
 class SpeakerMemoryStore:
     """Small synchronous store intended for one in-process pipeline."""
 
-    _SCHEMA_VERSION = 5
+    _SCHEMA_VERSION = 6
     _MAX_CENTROID_WEIGHT = 20.0
     _MAX_EVIDENCE_SCORE = 10.0
 
@@ -161,6 +161,15 @@ class SpeakerMemoryStore:
             );
             CREATE INDEX IF NOT EXISTS voice_person_evidence_lookup_idx
                 ON voice_person_evidence(voice_id, person_id, created_at);
+            CREATE TABLE IF NOT EXISTS voice_person_blocks (
+                voice_id TEXT NOT NULL REFERENCES voice_clusters(id) ON DELETE CASCADE,
+                person_id TEXT NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+                reason TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                PRIMARY KEY (voice_id, person_id)
+            );
+            CREATE INDEX IF NOT EXISTS voice_person_blocks_person_idx
+                ON voice_person_blocks(person_id, voice_id);
             DELETE FROM voice_person_evidence
                 WHERE observation_id IS NOT NULL
                   AND rowid NOT IN (
@@ -194,7 +203,7 @@ class SpeakerMemoryStore:
         row = self._connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
         if row is None:
             self._connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (self._SCHEMA_VERSION,))
-        elif row["version"] in {1, 2, 3, 4}:
+        elif row["version"] in {1, 2, 3, 4, 5}:
             self._connection.execute("UPDATE schema_meta SET version = ?", (self._SCHEMA_VERSION,))
         elif row["version"] != self._SCHEMA_VERSION:
             raise RuntimeError(f"unsupported speaker-memory schema version: {row['version']}")
@@ -668,6 +677,28 @@ class SpeakerMemoryStore:
                 (self._id("e"), voice_id, person_id, kind, float(weight), observation_id, self.clock()),
             )
 
+    def block_voice_person(self, voice_id: str, person_id: str, *, reason: str) -> None:
+        """Persist a fail-closed rejection for this voice/person relation."""
+
+        if not reason.strip():
+            raise ValueError("voice/person block reason must not be empty")
+        with self._transaction():
+            self._connection.execute(
+                """INSERT INTO voice_person_blocks(voice_id, person_id, reason, created_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(voice_id, person_id) DO UPDATE SET
+                       reason = excluded.reason,
+                       created_at = excluded.created_at""",
+                (voice_id, person_id, reason.strip()[:120], self.clock()),
+            )
+
+    def clear_voice_person_block(self, voice_id: str, person_id: str) -> None:
+        with self._transaction():
+            self._connection.execute(
+                "DELETE FROM voice_person_blocks WHERE voice_id = ? AND person_id = ?",
+                (voice_id, person_id),
+            )
+
     def resolve_person_candidates(self, voice_id: str) -> list[PersonCandidate]:
         canonical_id = self.resolve_voice_id(voice_id)
         with self._lock:
@@ -676,14 +707,29 @@ class SpeakerMemoryStore:
                           MAX(?, MIN(?, SUM(e.weight))) AS evidence_score
                    FROM voice_person_evidence AS e
                    JOIN persons AS p ON p.id = e.person_id
-                   WHERE e.voice_id = ?
+                   WHERE (e.voice_id = ?
                       OR e.voice_id IN (
                           SELECT source_voice_id FROM voice_aliases
                           WHERE canonical_voice_id = ?
-                      )
+                      ))
+                     AND NOT EXISTS (
+                         SELECT 1 FROM voice_person_blocks AS b
+                         WHERE b.person_id = e.person_id
+                           AND (b.voice_id = ? OR b.voice_id IN (
+                               SELECT source_voice_id FROM voice_aliases
+                               WHERE canonical_voice_id = ?
+                           ))
+                     )
                    GROUP BY p.id, p.display_name
                    ORDER BY evidence_score DESC, p.id""",
-                (-self._MAX_EVIDENCE_SCORE, self._MAX_EVIDENCE_SCORE, canonical_id, canonical_id),
+                (
+                    -self._MAX_EVIDENCE_SCORE,
+                    self._MAX_EVIDENCE_SCORE,
+                    canonical_id,
+                    canonical_id,
+                    canonical_id,
+                    canonical_id,
+                ),
             ).fetchall()
         return [
             PersonCandidate(
