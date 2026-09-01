@@ -139,7 +139,9 @@ def test_decisive_person_evidence_yields_known_identity(store: SpeakerMemoryStor
     person = store.create_person("Аркадий")
     store.add_identity_evidence(first.voice_id, person.id, kind="self_introduction", weight=3.0)
 
-    result = observe(memory_tracker, unit([1.0, 0.02]), turn_id="turn_2")
+    # Still a plausible match, but below the strict acoustic threshold; the
+    # decisive self-introduction evidence must keep the identity known.
+    result = observe(memory_tracker, unit([0.80, 0.60]), turn_id="turn_2")
 
     assert result.state is SpeakerState.KNOWN
     assert result.candidate is not None

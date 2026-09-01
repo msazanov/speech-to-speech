@@ -162,9 +162,25 @@ class SpeakerTracker:
         )
 
         if acoustic_state is SpeakerState.AMBIGUOUS:
-            state = acoustic_state
             candidate = self._top_candidate(voice.id)
-            recommendation = "clarify"
+            # A known cluster may score below the conservative acoustic
+            # match threshold because the turn is short or replayed through a
+            # different device.  Once the candidate is decisive in the
+            # identity evidence and there is no close acoustic rival, keep the
+            # person identity instead of downgrading every turn to "unknown".
+            identity_state, identity_candidate = self._identity_state(voice.id)
+            if (
+                top_score >= self.candidate_threshold
+                and voice_margin >= self.ambiguity_margin
+                and identity_state is SpeakerState.KNOWN
+                and identity_candidate is not None
+            ):
+                state = SpeakerState.KNOWN
+                candidate = identity_candidate
+                recommendation = "none"
+            else:
+                state = acoustic_state
+                recommendation = "clarify"
         else:
             state, candidate = self._identity_state(voice.id)
             if candidate is None and group_candidate is not None:
