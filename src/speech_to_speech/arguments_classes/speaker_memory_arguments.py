@@ -23,6 +23,10 @@ class SpeakerMemoryArguments:
         default=700,
         metadata={"help": "Minimum final speech duration eligible for speaker embedding. Default is 700 ms."},
     )
+    speaker_memory_min_quality: float = field(
+        default=0.5,
+        metadata={"help": "Minimum bounded signal quality eligible for speaker embedding. Default is 0.5."},
+    )
     speaker_memory_match_threshold: float = field(
         default=0.82,
         metadata={"help": "Cosine threshold for a decisive voice-cluster match."},
