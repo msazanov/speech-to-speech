@@ -74,9 +74,14 @@ class _InlineGemmaThoughtSplitter:
                 emitted.append(("reasoning" if self._in_thought else "text", self._buffer))
                 self._buffer = ""
                 break
-            # Hold only a possible split marker suffix. The rest can be sent
-            # immediately, so normal streaming does not wait for EOS.
-            keep = min(len(self._buffer), len(marker) - 1)
+            # Hold only a suffix that is actually a prefix of the marker. The
+            # rest can be sent immediately, so ordinary short answers do not
+            # wait for EOS just because the splitter is installed.
+            keep = 0
+            for size in range(min(len(self._buffer), len(marker) - 1), 0, -1):
+                if self._buffer.endswith(marker[:size]):
+                    keep = size
+                    break
             if len(self._buffer) > keep:
                 emitted.append(("reasoning" if self._in_thought else "text", self._buffer[:-keep] if keep else self._buffer))
                 self._buffer = self._buffer[-keep:] if keep else ""
