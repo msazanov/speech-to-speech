@@ -699,7 +699,12 @@ class RealtimeService:
 
         queue = self.text_prompt_queue
         if queue and transcript:
-            forced_tool_call = route_fast_tool(llm_transcript, cfg.session.tools, speaker=event.speaker)
+            forced_tool_call = route_fast_tool(
+                llm_transcript,
+                cfg.session.tools,
+                speaker=event.speaker,
+                previous_assistant_text=self._previous_assistant_text(cfg.chat),
+            )
             if forced_tool_call is not None:
                 logger.info(
                     "Fast tool route name=%s turn=%s voice=%s",
@@ -721,6 +726,26 @@ class RealtimeService:
             queue.put(request)
 
         return [*completed_events]
+
+    @staticmethod
+    def _previous_assistant_text(chat: Chat) -> str | None:
+        """Return the immediately preceding assistant response for confirmations."""
+
+        snapshot = chat.copy(deep=True)
+        parts: list[str] = []
+        for item in reversed(snapshot.buffer):
+            role = getattr(item, "role", None)
+            if role == "assistant":
+                for content in getattr(item, "content", ()):
+                    text = getattr(content, "text", None)
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+                continue
+            if role == "user":
+                break
+        if not parts:
+            return None
+        return " ".join(reversed(parts))
 
     def _on_transcription_failed(self, conn_id: str, event: TranscriptionFailedEvent) -> list[ServerEvent]:
         """Surface a final STT failure without creating conversation or LLM work."""

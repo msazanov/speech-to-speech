@@ -42,6 +42,13 @@ def test_routes_name_introduction_using_only_trusted_reference() -> None:
     assert json.loads(named.arguments)["name"] == "Тимур"
     assert route_fast_tool(with_speaker("Как меня зовут?"), TOOLS) is None
     assert route_fast_tool("Меня зовут Михаил", TOOLS) is None
+    confirmed_name = route_fast_tool(
+        with_speaker("да, верно"),
+        TOOLS,
+        previous_assistant_text="Ты Марат, верно?",
+    )
+    assert confirmed_name is not None and confirmed_name.name == "speaker_memory_remember_name"
+    assert json.loads(confirmed_name.arguments) == {"voice": "deadbeaf", "name": "Марат"}
 
     candidate_context = {
         "speaker_ref": "sr_trusted",

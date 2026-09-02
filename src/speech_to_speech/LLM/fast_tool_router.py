@@ -144,11 +144,32 @@ def _intro_name(value: str) -> str:
     return " ".join(selected)[:80]
 
 
+def _confirmed_name(previous_assistant_text: str | None, utterance: str) -> str | None:
+    """Extract a name from the immediately preceding identity question."""
+
+    if not previous_assistant_text or not re.fullmatch(
+        r"\s*(?:да|да\s*,\s*верно|верно|так|угу|ага|yes|yes\s*,\s*(?:right|correct)|correct|that's right|right)[.!?\s]*",
+        utterance,
+        flags=re.IGNORECASE,
+    ):
+        return None
+    patterns = (
+        r"(?:ты|вы)\s+([\w'-]{2,40})\s*,?\s*(?:верно|правильно|right|correct)\s*[?!.]*",
+        r"(?:are\s+you|you're)\s+([A-Za-z][A-Za-z'-]{1,39})\s*,?\s*(?:right|correct)\s*[?!.]*",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, previous_assistant_text, flags=re.IGNORECASE)
+        if match:
+            return _intro_name(match.group(1))
+    return None
+
+
 def route_fast_tool(
     text: str,
     tools: Iterable[Any] | None,
     *,
     speaker: SpeakerAttribution | None = None,
+    previous_assistant_text: str | None = None,
 ) -> ResponseFunctionToolCall | None:
     """Return one explicit local tool call, or ``None`` for ordinary text."""
 
@@ -167,6 +188,10 @@ def route_fast_tool(
     state = speaker.state.value if speaker is not None else context.get("state") if context is not None else None
     if not utterance:
         return None
+
+    confirmed_name = _confirmed_name(previous_assistant_text, utterance)
+    if confirmed_name and voice and "speaker_memory_remember_name" in names:
+        return _call("speaker_memory_remember_name", {"voice": voice, "name": confirmed_name})
 
     if (
         voice
