@@ -810,6 +810,32 @@ class SpeakerMemoryStore:
             last_seen=row["last_seen"],
         )
 
+    def find_people_by_name(self, name: str) -> list[Person]:
+        """Return existing people whose normalized display name matches exactly.
+
+        Older databases may contain duplicate names created before explicit
+        name re-use was enabled.  The service only reuses a name when this
+        returns one person; multiple matches remain an intentional ambiguity.
+        """
+
+        normalized_name = " ".join(name.split()).casefold()
+        if not normalized_name:
+            return []
+        with self._lock:
+            rows = self._connection.execute("SELECT * FROM persons ORDER BY created_at, id").fetchall()
+        prefix = normalized_name + "\x1f"
+        return [
+            Person(
+                id=row["id"],
+                name=row["display_name"],
+                created_at=row["created_at"],
+                last_seen=row["last_seen"],
+            )
+            for row in rows
+            if row["normalized_name"] == normalized_name
+            or str(row["normalized_name"]).startswith(prefix)
+        ]
+
     def add_identity_evidence(
         self,
         voice_id: str,

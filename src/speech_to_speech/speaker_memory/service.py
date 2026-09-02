@@ -88,8 +88,16 @@ class SpeakerMemoryService:
         ]
         person = next((candidate for candidate in candidates if candidate.name.casefold() == normalized_name.casefold()), None)
         if person is None:
-            created = self.store.create_person(normalized_name, reuse=False)
-            person_id = created.id
+            named_people = self.store.find_people_by_name(normalized_name)
+            if len(named_people) == 1 and self._recent_voice_matches_person(
+                reference.voice_id,
+                named_people[0].id,
+                conversation_id=conversation_id,
+            ):
+                person_id = named_people[0].id
+            else:
+                created = self.store.create_person(normalized_name, reuse=False)
+                person_id = created.id
         else:
             person_id = person.person_id
         self.store.clear_voice_person_block(reference.voice_id, person_id)
@@ -115,6 +123,31 @@ class SpeakerMemoryService:
         )
         self.store.bind_reference_candidate(speaker_ref, person_id)
         return self.inspect(speaker_ref, conversation_id=conversation_id)
+
+    def _recent_voice_matches_person(
+        self,
+        voice_id: str,
+        person_id: str,
+        *,
+        conversation_id: str,
+    ) -> bool:
+        """Check whether a same-named person has a recent acoustically close voice."""
+
+        current_id = self.store.resolve_voice_id(voice_id)
+        for recent_id in self.store.recent_voice_ids(
+            conversation_id,
+            limit=self._RECENT_VOICE_LIMIT,
+        ):
+            if self.store.resolve_voice_id(recent_id) == current_id:
+                continue
+            if not any(
+                candidate.person_id == person_id and candidate.evidence_score > 0
+                for candidate in self.store.resolve_person_candidates(recent_id)
+            ):
+                continue
+            if self.store.voice_similarity(recent_id, current_id) >= self._RECENT_MERGE_THRESHOLD:
+                return True
+        return False
 
     def _merge_recent_voice_clusters(
         self,
