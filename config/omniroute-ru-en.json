@@ -36,6 +36,7 @@
   "responses_api_request_timeout_s": 120.0,
   "responses_api_max_retries": 0,
   "responses_api_disable_thinking": true,
+  "responses_api_thinking_mode": "auto",
   "responses_api_reasoning_effort": null,
   "responses_api_gen_max_tokens": 64,
   "responses_api_gen_temperature": 0.2,

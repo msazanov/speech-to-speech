@@ -56,6 +56,22 @@ cd /home/random/dev/huggingvoice
 историю диалога и ограничен общим provider-worker, поэтому не создаёт бесконечных
 повторов и прогревает prompt/tools prefix до первой реплики.
 
+### Размышление по необходимости
+
+Профиль передаёт `responses_api_thinking_mode=auto`: совместимый провайдер получает
+`chat_template_kwargs.thinking_mode=adaptive` и сам выбирает, открывать ли канал
+размышления в конкретном запросе. HuggingVoice никогда не отправляет содержимое
+этого канала в TTS или историю. Если провайдер действительно начал reasoning,
+пользователь один раз слышит короткое «Сейчас надо подумать» (для английской
+реплики — `Give me a moment to think.`), затем обычный ответ.
+
+Текущий FreeToken GPU-процесс запущен с `--reasoning-parser off`, поэтому его
+`adaptive` сейчас фактически означает быстрый chat-режим; это безопасно, но не
+включает скрытое reasoning. Для настоящего выбора Gemma на стороне модели нужно
+включить reasoning parser/auto в FreeToken, не меняя HuggingVoice. При случайном
+возврате сырых Gemma thought-маркеров клиентский splitter удалит их и не даст
+озвучить внутренний текст.
+
 Проверка состояния:
 
 ```bash
@@ -145,8 +161,9 @@ PipeWire-устройств.
 
 ## Ключевые параметры производительности
 
-- Chat Completions: `max_tokens=64`, `temperature=0.2`, thinking отключён через
-  `chat_template_kwargs`, timeout 120 с, SDK retries 0; prefill — 1 токен;
+- Chat Completions: `max_tokens=64`, `temperature=0.2`, thinking policy `auto`
+  (adaptive, если её поддерживает провайдер), timeout 120 с, SDK retries 0;
+  prefill — 1 токен;
 - GigaAM: `CPUExecutionProvider`, INT8, 6 потоков;
 - Silero/RHVoice: 24 кГц синтез с преобразованием в 16 кГц блоками по 512 samples;
 - VAD: `min_silence_ms=500`, live transcription включена с интервалом 250 мс.

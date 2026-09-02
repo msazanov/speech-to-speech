@@ -150,3 +150,26 @@ def test_arbiter_timeout_does_not_retry_request() -> None:
     assert len(endpoint.requests) == 2  # one warmup plus one generation; no requeue/retry
     assert elapsed < 0.3
     assert any(isinstance(output, EndOfResponse) and output.error is not None for output in outputs)
+
+
+def test_adaptive_thinking_is_forwarded_without_forcing_reasoning() -> None:
+    with DelayedChatEndpoint(generation_delay_s=0.0) as endpoint:
+        handler = ChatCompletionsApiModelHandler(
+            threading.Event(),
+            queue.Queue(),
+            queue.Queue(),
+            setup_kwargs={
+                "model_name": "gemma-4-e2b",
+                "base_url": endpoint.base_url,
+                "api_key": "local",
+                "stream": True,
+                "disable_thinking": False,
+                "thinking_mode": "auto",
+                "request_timeout_s": 0.5,
+                "max_retries": 0,
+            },
+        )
+        generate_once(handler)
+
+    generation_request = endpoint.requests[-1]
+    assert generation_request["chat_template_kwargs"] == {"thinking_mode": "adaptive"}

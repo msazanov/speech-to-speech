@@ -49,6 +49,14 @@ class ResponsesApiLanguageModelHandlerArguments(LanguageModelBaseArguments):
             "thinking_mode='disabled'."
         },
     )
+    responses_api_thinking_mode: Literal["off", "auto", "on"] | None = field(
+        default=None,
+        metadata={
+            "help": "Thinking policy for compatible local providers: 'off' disables reasoning, 'on' enables it, "
+            "and 'auto' lets the model choose per turn when the provider supports adaptive thinking. "
+            "Unset preserves responses_api_disable_thinking."
+        },
+    )
     responses_api_reasoning_effort: Optional[str] = field(
         default="none",
         metadata={

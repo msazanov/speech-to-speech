@@ -30,6 +30,7 @@ from speech_to_speech.LLM.base_openai_compatible_language_model import (
     AssistantMessage,
     BaseOpenAICompatibleHandler,
     ProviderEvent,
+    ReasoningDelta,
     TextDelta,
     ToolCall,
     Usage,
@@ -39,6 +40,48 @@ from speech_to_speech.LLM.compaction_prompt import CompactGenerateFn
 from speech_to_speech.utils.utils import _generate_id
 
 logger = logging.getLogger(__name__)
+
+
+class _InlineGemmaThoughtSplitter:
+    """Remove Gemma thought-channel markers when an upstream parser is disabled.
+
+    FreeToken normally exposes reasoning as ``delta.reasoning_content``. Older
+    workers can still pass the raw ``<|channel>thought`` channel in
+    ``delta.content``; keeping this tiny state machine here prevents hidden
+    reasoning and control tokens from reaching TTS while preserving visible text.
+    """
+
+    _OPEN = "<|channel>thought\n"
+    _CLOSE = "<channel|>"
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._in_thought = False
+
+    def feed(self, text: str, *, final: bool = False) -> list[tuple[str, str]]:
+        self._buffer += text
+        emitted: list[tuple[str, str]] = []
+        while self._buffer:
+            marker = self._CLOSE if self._in_thought else self._OPEN
+            index = self._buffer.find(marker)
+            if index >= 0:
+                if index:
+                    emitted.append(("reasoning" if self._in_thought else "text", self._buffer[:index]))
+                self._buffer = self._buffer[index + len(marker) :]
+                self._in_thought = not self._in_thought
+                continue
+            if final:
+                emitted.append(("reasoning" if self._in_thought else "text", self._buffer))
+                self._buffer = ""
+                break
+            # Hold only a possible split marker suffix. The rest can be sent
+            # immediately, so normal streaming does not wait for EOS.
+            keep = min(len(self._buffer), len(marker) - 1)
+            if len(self._buffer) > keep:
+                emitted.append(("reasoning" if self._in_thought else "text", self._buffer[:-keep] if keep else self._buffer))
+                self._buffer = self._buffer[-keep:] if keep else ""
+            break
+        return [(kind, piece) for kind, piece in emitted if piece]
 
 
 def _to_chat_tools(req_tools: Any) -> list[ChatCompletionToolParam] | None:
@@ -205,6 +248,7 @@ def _iter_chat_stream_events(api_response: Stream[ChatCompletionChunk]) -> Itera
     tool_accum: dict[int, dict[str, str]] = {}
     usage: Usage | None = None
     text_segment = ""
+    thought_splitter = _InlineGemmaThoughtSplitter()
 
     def flush_tools() -> Iterator[ProviderEvent]:
         nonlocal text_segment
@@ -234,17 +278,31 @@ def _iter_chat_stream_events(api_response: Stream[ChatCompletionChunk]) -> Itera
         if not chunk.choices:
             continue
         delta = chunk.choices[0].delta
+        reasoning_piece = getattr(delta, "reasoning_content", None)
+        if reasoning_piece:
+            yield ReasoningDelta(text=reasoning_piece)
         text_piece = delta.content or getattr(delta, "refusal", None)
         continuing_tool = bool(tool_accum)
         if continuing_tool:
             accumulate_tools(delta.tool_calls)
         if text_piece:
-            if continuing_tool:
-                yield from flush_tools()
-            text_segment += text_piece
-            yield TextDelta(text=text_piece)
+            for kind, piece in thought_splitter.feed(text_piece):
+                if kind == "reasoning":
+                    yield ReasoningDelta(text=piece)
+                    continue
+                if continuing_tool:
+                    yield from flush_tools()
+                text_segment += piece
+                yield TextDelta(text=piece)
         if not continuing_tool:
             accumulate_tools(delta.tool_calls)
+
+    for kind, piece in thought_splitter.feed("", final=True):
+        if kind == "reasoning":
+            yield ReasoningDelta(text=piece)
+        else:
+            text_segment += piece
+            yield TextDelta(text=piece)
 
     if tool_accum:
         yield from flush_tools()
@@ -263,9 +321,19 @@ def _iter_chat_response_events(api_response: Any) -> Iterator[ProviderEvent]:
     if message is None:
         return
     raw_content = message.content or getattr(message, "refusal", None)
+    visible_content = ""
+    if getattr(message, "reasoning_content", None):
+        yield ReasoningDelta(text=message.reasoning_content)
     if raw_content:
-        yield AssistantMessage(content=[AssistantContent(type="output_text", text=raw_content)])
-        yield TextDelta(text=raw_content)
+        splitter = _InlineGemmaThoughtSplitter()
+        for kind, piece in splitter.feed(raw_content, final=True):
+            if kind == "reasoning":
+                yield ReasoningDelta(text=piece)
+            else:
+                visible_content += piece
+        if visible_content:
+            yield AssistantMessage(content=[AssistantContent(type="output_text", text=visible_content)])
+            yield TextDelta(text=visible_content)
     tool_accum: dict[int, dict[str, str]] = {}
     for tool_call in message.tool_calls or []:
         tool_accum[len(tool_accum)] = {

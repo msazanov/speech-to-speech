@@ -86,6 +86,12 @@ class TextDelta(BaseModel):
     text: str
 
 
+class ReasoningDelta(BaseModel):
+    """Provider reasoning text, never forwarded to the voice or conversation history."""
+
+    text: str
+
+
 class AssistantMessage(BaseModel):
     """A complete assistant turn to write back to history."""
 
@@ -105,7 +111,7 @@ class Usage(BaseModel):
     output_tokens: int
 
 
-ProviderEvent = TextDelta | AssistantMessage | ToolCall | Usage
+ProviderEvent = ReasoningDelta | TextDelta | AssistantMessage | ToolCall | Usage
 SerializeFn = Callable[[Chat], Any]
 RequestFn = Callable[[Any, dict[str, Any]], Any]
 EventIteratorFn = Callable[[Any], Iterator[ProviderEvent]]
@@ -147,6 +153,7 @@ class _GenState(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     output_emitted: bool = False
+    thinking_ack_emitted: bool = False
 
 
 class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
@@ -177,6 +184,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         cancel_scope: CancelScope | None = None,
         speculative_turns: SpeculativeTurnTracker | None = None,
         disable_thinking: bool = True,
+        thinking_mode: Literal["off", "auto", "on"] | None = None,
         reasoning_effort: Optional[str] = None,
         request_timeout_s: float = 20.0,
         max_retries: int | None = None,
@@ -232,7 +240,10 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         if self.max_retries is not None:
             client_kwargs["max_retries"] = self.max_retries
         self.client = OpenAI(**client_kwargs)
-        self._extra_body = self._build_extra_body(base_url, disable_thinking, reasoning_effort)
+        self.thinking_mode = thinking_mode
+        self._extra_body = self._build_extra_body(
+            base_url, disable_thinking, reasoning_effort, thinking_mode
+        )
         self._prefetch_worker_slots = BoundedSemaphore(PREFETCH_PROVIDER_WORKER_LIMIT)
         self._prefetch_workers_lock = Lock()
         self._prefetch_workers: set[Thread] = set()
@@ -275,6 +286,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         base_url: Optional[str],
         disable_thinking: bool,
         reasoning_effort: Optional[str],
+        thinking_mode: Literal["off", "auto", "on"] | None = None,
     ) -> Optional[dict[str, Any]]:
         """Build the provider-specific ``extra_body`` used to disable reasoning.
 
@@ -290,6 +302,18 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             return {"reasoning_effort": reasoning_effort}
         if base_url is None or cls._is_official_openai(base_url):
             return None
+        mode = thinking_mode
+        if mode is None:
+            mode = "off" if disable_thinking else "auto"
+        if mode == "auto":
+            return {"chat_template_kwargs": {"thinking_mode": "adaptive"}}
+        if mode == "on":
+            return {
+                "chat_template_kwargs": {
+                    "enable_thinking": True,
+                    "thinking_mode": "enabled",
+                }
+            }
         if disable_thinking:
             return {
                 "chat_template_kwargs": {
@@ -762,6 +786,11 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             return "Done, I removed that memory." if english else "Готово, я удалил эту запись из памяти."
         return ""
 
+    @staticmethod
+    def _thinking_ack(language_code: str | None) -> str:
+        """Short local speech emitted once when the provider opens reasoning."""
+        return "Give me a moment to think." if (language_code or "").casefold().startswith("en") else "Сейчас надо подумать."
+
     # ── consumption ─────────────────────────────────────────────────────────--
 
     def _consume_streaming(
@@ -799,6 +828,18 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 state.pending.append(
                     RealtimeConversationItemAssistantMessage(type="message", role="assistant", content=event.content)
                 )
+            elif isinstance(event, ReasoningDelta):
+                if turn.wants_audio and event.text.strip() and not state.thinking_ack_emitted:
+                    if printable_text.strip():
+                        sentence_batch.append(remove_markdown(printable_text.strip()))
+                        printable_text = ""
+                    if sentence_batch:
+                        yield from _flush(sentence_batch)
+                        sentence_batch = []
+                    state.thinking_ack_emitted = True
+                    state.output_emitted = True
+                    logger.info("LLM reasoning started model=%s turn=%s", self.model_name, turn.turn_id)
+                    yield self._chunk(turn, text=self._thinking_ack(turn.language_code))
             elif isinstance(event, ToolCall):
                 # Flush any pending spoken text before emitting the tool call.
                 if printable_text.strip():
@@ -882,6 +923,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 state.pending.append(
                     RealtimeConversationItemAssistantMessage(type="message", role="assistant", content=event.content)
                 )
+            elif isinstance(event, ReasoningDelta):
+                if turn.wants_audio and event.text.strip() and not state.thinking_ack_emitted:
+                    state.thinking_ack_emitted = True
+                    state.output_emitted = True
+                    logger.info("LLM reasoning started model=%s turn=%s", self.model_name, turn.turn_id)
+                    yield self._chunk(turn, text=self._thinking_ack(turn.language_code))
             elif isinstance(event, ToolCall):
                 yield from self._record_tool_call(state, turn, event.item)
             elif isinstance(event, TextDelta):
@@ -962,11 +1009,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     error_message = "Cannot generate a response: no instructions and no input were provided."
                 else:
                     logger.info(
-                        "LLM request model=%s turn=%s rev=%s stream=%s prompt=%s",
+                        "LLM request model=%s turn=%s rev=%s stream=%s thinking=%s prompt=%s",
                         self.model_name,
                         turn.turn_id,
                         turn.turn_revision,
                         self.stream,
+                        self.thinking_mode or ("off" if self._extra_body and "chat_template_kwargs" in self._extra_body and self._extra_body["chat_template_kwargs"].get("enable_thinking") is False else "provider-default"),
                         structured_for_log(api_input),
                     )
 
