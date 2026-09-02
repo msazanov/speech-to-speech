@@ -57,6 +57,13 @@ class ResponsesApiLanguageModelHandlerArguments(LanguageModelBaseArguments):
             "Unset preserves responses_api_disable_thinking."
         },
     )
+    responses_api_thinking_ack_allow_profanity: bool = field(
+        default=False,
+        metadata={
+            "help": "Allow profane Russian phrases in the spoken thinking acknowledgement pool. "
+            "Default is false."
+        },
+    )
     responses_api_reasoning_effort: Optional[str] = field(
         default="none",
         metadata={

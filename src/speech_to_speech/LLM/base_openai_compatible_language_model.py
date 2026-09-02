@@ -41,6 +41,7 @@ from speech_to_speech.LLM.chat import (
 )
 from speech_to_speech.LLM.compaction_prompt import CompactGenerateFn, build_compactor
 from speech_to_speech.LLM.text_prompt import build_text_system_prompt
+from speech_to_speech.LLM.thinking_phrases import next_thinking_phrase
 from speech_to_speech.LLM.utils import (
     language_name_for_prompt,
     remove_markdown,
@@ -185,6 +186,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         speculative_turns: SpeculativeTurnTracker | None = None,
         disable_thinking: bool = True,
         thinking_mode: Literal["off", "auto", "on"] | None = None,
+        thinking_ack_allow_profanity: bool = False,
         reasoning_effort: Optional[str] = None,
         request_timeout_s: float = 20.0,
         max_retries: int | None = None,
@@ -241,6 +243,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             client_kwargs["max_retries"] = self.max_retries
         self.client = OpenAI(**client_kwargs)
         self.thinking_mode = thinking_mode
+        self.thinking_ack_allow_profanity = bool(thinking_ack_allow_profanity)
         self._extra_body = self._build_extra_body(
             base_url, disable_thinking, reasoning_effort, thinking_mode
         )
@@ -786,10 +789,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             return "Done, I removed that memory." if english else "Готово, я удалил эту запись из памяти."
         return ""
 
-    @staticmethod
-    def _thinking_ack(language_code: str | None) -> str:
+    def _thinking_ack(self, language_code: str | None) -> str:
         """Short local speech emitted once when the provider opens reasoning."""
-        return "Give me a moment to think." if (language_code or "").casefold().startswith("en") else "Сейчас надо подумать."
+        return next_thinking_phrase(
+            language_code,
+            allow_profanity=self.thinking_ack_allow_profanity,
+        )
 
     # ── consumption ─────────────────────────────────────────────────────────--
 
