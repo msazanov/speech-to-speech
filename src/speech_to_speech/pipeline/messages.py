@@ -363,6 +363,9 @@ class GenerateResponseRequest(PipelineMessage):
     # Trusted per-turn reference used to complete provider tool arguments when
     # a compatible model emits a memory call without copying the hidden tag.
     speaker_ref: str | None = Field(default=None, exclude=True, repr=False)
+    # Compact public voice token used in model-visible tool arguments.  The
+    # private reference above remains only for server-side authorization.
+    speaker_voice: str | None = Field(default=None, exclude=True, repr=False)
     # Full trusted attribution used by the direct-audio LLM path to inject the
     # same bounded context that the transcription path prepends to text.
     speaker: SpeakerAttribution | None = Field(default=None, exclude=True, repr=False)

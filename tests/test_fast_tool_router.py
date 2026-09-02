@@ -17,7 +17,7 @@ TOOLS = [
 
 
 def with_speaker(text: str, *, state: str = "unknown") -> str:
-    context = {"speaker_ref": "sr_trusted", "voice_id": "v_1", "state": state}
+    context = {"voice": "deadbeaf", "name": "unknown", "state": state}
     return f"<huggingvoice_speaker_context>{json.dumps(context)}</huggingvoice_speaker_context>\n{text}"
 
 
@@ -26,23 +26,21 @@ def test_routes_name_introduction_using_only_trusted_reference() -> None:
 
     assert isinstance(call, ResponseFunctionToolCall)
     assert call.name == "speaker_memory_remember_name"
-    assert json.loads(call.arguments) == {"speaker_ref": "sr_trusted", "name": "Михаил"}
+    assert json.loads(call.arguments) == {"voice": "deadbeaf", "name": "Михаил"}
     long_stt = route_fast_tool(
         with_speaker("меня зовут аркадий это длинная проверочная фраза для распознавания голоса"),
         TOOLS,
     )
     assert long_stt is not None
-    assert json.loads(long_stt.arguments) == {"speaker_ref": "sr_trusted", "name": "аркадий"}
+    assert json.loads(long_stt.arguments) == {"voice": "deadbeaf", "name": "аркадий"}
     compact = route_fast_tool(with_speaker("я Марат"), TOOLS)
     assert compact is not None and compact.name == "speaker_memory_remember_name"
-    assert json.loads(compact.arguments) == {"speaker_ref": "sr_trusted", "name": "Марат"}
+    assert json.loads(compact.arguments) == {"voice": "deadbeaf", "name": "Марат"}
     assert route_fast_tool(with_speaker("я хочу поговорить"), TOOLS) is None
     named = route_fast_tool(with_speaker("моё имя — Тимур"), TOOLS)
     assert named is not None
     assert json.loads(named.arguments)["name"] == "Тимур"
-    recall = route_fast_tool(with_speaker("Как меня зовут?"), TOOLS)
-    assert recall is not None and recall.name == "speaker_memory_recall"
-    assert json.loads(recall.arguments) == {"speaker_ref": "sr_trusted", "query": "Как меня зовут?"}
+    assert route_fast_tool(with_speaker("Как меня зовут?"), TOOLS) is None
     assert route_fast_tool("Меня зовут Михаил", TOOLS) is None
 
     candidate_context = {
@@ -54,10 +52,10 @@ def test_routes_name_introduction_using_only_trusted_reference() -> None:
     prefix = f"<huggingvoice_speaker_context>{json.dumps(candidate_context)}</huggingvoice_speaker_context>\n"
     confirmed = route_fast_tool(prefix + "Да", TOOLS)
     assert confirmed is not None and confirmed.name == "speaker_memory_confirm"
-    assert json.loads(confirmed.arguments) == {"speaker_ref": "sr_trusted", "person_id": "p_1"}
+    assert json.loads(confirmed.arguments) == {"voice": "00000001"}
     rejected = route_fast_tool(prefix + "Нет, это не я", TOOLS)
     assert rejected is not None and rejected.name == "speaker_memory_reject"
-    assert json.loads(rejected.arguments) == {"speaker_ref": "sr_trusted", "person_id": "p_1"}
+    assert json.loads(rejected.arguments) == {"voice": "00000001"}
 
 
 def test_routes_web_search_without_inventing_speaker_reference() -> None:

@@ -15,7 +15,7 @@ from speech_to_speech.pipeline.messages import VADAudio
 from speech_to_speech.pipeline.transcript_logging import transcript_for_log
 
 from .extractor import SpeakerEmbeddingExtractor
-from .models import SpeakerAttribution, SpeakerState
+from .models import SpeakerAttribution, SpeakerState, compact_voice_id
 from .tracker import SpeakerTracker
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
             attribution = attribution.model_copy(update={"speaker_ms": (perf_counter() - started) * 1000})
             logger.info(
                 "Speaker attributed voice=%s state=%s person_id=%s person=%s margin=%s speaker_ms=%.1f",
-                attribution.voice_id,
+                compact_voice_id(attribution.voice_id),
                 attribution.state.value,
                 attribution.candidate.person_id if attribution.candidate is not None else "unknown",
                 json.dumps(

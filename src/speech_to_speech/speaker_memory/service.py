@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from .models import PersonalFact, PersonCandidate, SpeakerAttribution, SpeakerState
+import logging
+
+from .models import PersonalFact, PersonCandidate, SpeakerAttribution, SpeakerState, compact_voice_id
 from .store import SpeakerMemoryStore
+
+logger = logging.getLogger(__name__)
 
 
 class IdentityNotConfirmed(PermissionError):
@@ -22,6 +26,8 @@ class SpeakerMemoryService:
     # Rejection is an explicit privacy boundary.  A single negative event
     # must outweigh an earlier introduction/confirmation on this reference.
     _REJECT_WEIGHT = -4.0
+    _RECENT_VOICE_LIMIT = 32
+    _RECENT_MERGE_THRESHOLD = 0.70
     _MAX_NAME_LENGTH = 80
     _MAX_FACT_LENGTH = 500
     _MAX_TOPIC_LENGTH = 80
@@ -48,6 +54,11 @@ class SpeakerMemoryService:
             candidate=candidate,
             recommendation="clarify" if state is SpeakerState.CONFLICT else "none",
         )
+
+    def resolve_reference_for_voice(self, voice: str, *, conversation_id: str) -> str:
+        """Resolve a compact public voice token to the current private reference."""
+
+        return self.store.resolve_reference_for_voice(voice, conversation_id=conversation_id).value
 
     def set_voice_blocked(
         self,
@@ -97,8 +108,58 @@ class SpeakerMemoryService:
             person_id,
             reason="explicit_name_introduction",
         )
+        self._merge_recent_voice_clusters(
+            reference.voice_id,
+            person_id,
+            conversation_id=conversation_id,
+        )
         self.store.bind_reference_candidate(speaker_ref, person_id)
         return self.inspect(speaker_ref, conversation_id=conversation_id)
+
+    def _merge_recent_voice_clusters(
+        self,
+        voice_id: str,
+        person_id: str,
+        *,
+        conversation_id: str,
+    ) -> list[str]:
+        """Fold recent unassigned duplicate clusters into a named voice.
+
+        Clusters are considered only from the same recent conversation.  A
+        cluster carrying positive evidence for another person is never folded
+        by acoustic similarity alone; explicit identity evidence remains the
+        boundary between people.
+        """
+
+        canonical_id = self.store.resolve_voice_id(voice_id)
+        merged: list[str] = []
+        for recent_id in self.store.recent_voice_ids(
+            conversation_id,
+            limit=self._RECENT_VOICE_LIMIT,
+        ):
+            source_id = self.store.resolve_voice_id(recent_id)
+            if source_id == canonical_id or self.store.is_voice_blocked(source_id):
+                continue
+            other_candidates = self.store.resolve_person_candidates(source_id)
+            if any(candidate.person_id != person_id and candidate.evidence_score > 0 for candidate in other_candidates):
+                continue
+            similarity = self.store.voice_similarity(source_id, canonical_id)
+            if similarity < self._RECENT_MERGE_THRESHOLD:
+                continue
+            self.store.merge_voice_clusters(
+                source_id,
+                canonical_id,
+                reason="recent_voice_after_name",
+            )
+            merged.append(source_id)
+            logger.info(
+                "Speaker memory merged recent voice source=%s target=%s similarity=%.3f person_id=%s",
+                compact_voice_id(source_id),
+                compact_voice_id(canonical_id),
+                similarity,
+                person_id,
+            )
+        return merged
 
     def confirm(self, speaker_ref: str, person_id: str, *, conversation_id: str) -> SpeakerAttribution:
         return self._record_decision(

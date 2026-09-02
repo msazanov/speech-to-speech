@@ -82,7 +82,7 @@ def test_final_audio_is_attributed_but_progressive_audio_is_not(caplog) -> None:
     assert final.speaker.speaker_ms > 0
     assert extractor.calls == 1
     assert tracker.calls[0][1]["conversation_id"] == "conv_test"
-    assert "Speaker attributed voice=v_test state=unknown person_id=unknown" in caplog.text
+    assert "Speaker attributed voice=test state=unknown person_id=unknown" in caplog.text
     assert "sr_test" not in caplog.text
 
 

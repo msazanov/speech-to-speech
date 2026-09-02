@@ -3,8 +3,9 @@
 Some OpenAI-compatible local models describe the right action in plain text but
 do not emit a structured ``tool_calls`` field. This module recognizes only a
 few explicit, unambiguous voice commands and turns them into the same Realtime
-function-call item used by the provider path. Speaker-memory mutations can only
-use the short-lived reference injected by HuggingVoice.
+function-call item used by the provider path. Speaker-memory mutations carry
+only the compact current-turn voice token; the server resolves its private
+short-lived reference before mutation.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from typing import Any
 
 from openai.types.responses import ResponseFunctionToolCall
 
+from speech_to_speech.speaker_memory.models import SpeakerAttribution, compact_voice_id
 from speech_to_speech.utils.utils import _generate_id
 
 _CONTEXT_OPEN = "<huggingvoice_speaker_context>"
@@ -100,10 +102,11 @@ def _speaker_context_data(text: str) -> tuple[dict[str, Any] | None, str]:
 
 def _speaker_context(text: str) -> tuple[str | None, str]:
     payload, utterance = _speaker_context_data(text)
-    reference = payload.get("speaker_ref") if payload is not None else None
-    if not isinstance(reference, str) or not reference.strip():
-        reference = None
-    return reference, utterance
+    voice = payload.get("voice") if payload is not None else None
+    if not isinstance(voice, str) or not voice.strip():
+        legacy_voice = payload.get("voice_id") if payload is not None else None
+        voice = legacy_voice if isinstance(legacy_voice, str) and legacy_voice.strip() else None
+    return voice, utterance
 
 
 def _call(name: str, arguments: dict[str, Any]) -> ResponseFunctionToolCall:
@@ -141,24 +144,32 @@ def _intro_name(value: str) -> str:
     return " ".join(selected)[:80]
 
 
-def route_fast_tool(text: str, tools: Iterable[Any] | None) -> ResponseFunctionToolCall | None:
+def route_fast_tool(
+    text: str,
+    tools: Iterable[Any] | None,
+    *,
+    speaker: SpeakerAttribution | None = None,
+) -> ResponseFunctionToolCall | None:
     """Return one explicit local tool call, or ``None`` for ordinary text."""
 
     names = _tool_names(tools)
     context, utterance = _speaker_context_data(text)
-    speaker_ref = context.get("speaker_ref") if context is not None else None
-    if not isinstance(speaker_ref, str) or not speaker_ref.strip():
-        speaker_ref = None
+    context_voice = context.get("voice") if context is not None else None
+    if not isinstance(context_voice, str) or not context_voice.strip():
+        context_voice = context.get("voice_id") if context is not None else None
+    voice = (
+        compact_voice_id(speaker.voice_id)
+        if speaker is not None
+        else compact_voice_id(context_voice) if isinstance(context_voice, str) and context_voice.strip() else None
+    )
+    if not isinstance(voice, str) or not voice.strip() or voice == "unknown":
+        voice = None
+    state = speaker.state.value if speaker is not None else context.get("state") if context is not None else None
     if not utterance:
         return None
 
-    candidate = context.get("candidate") if context is not None else None
-    person_id = candidate.get("person_id") if isinstance(candidate, Mapping) else None
-    state = context.get("state") if context is not None else None
     if (
-        speaker_ref
-        and isinstance(person_id, str)
-        and person_id.strip()
+        voice
         and state in {"ambiguous", "conflict"}
         and "speaker_memory_confirm" in names
         and re.match(
@@ -169,12 +180,10 @@ def route_fast_tool(text: str, tools: Iterable[Any] | None) -> ResponseFunctionT
     ):
         return _call(
             "speaker_memory_confirm",
-            {"speaker_ref": speaker_ref, "person_id": person_id},
+            {"voice": voice},
         )
     if (
-        speaker_ref
-        and isinstance(person_id, str)
-        and person_id.strip()
+        voice
         and state in {"ambiguous", "conflict"}
         and "speaker_memory_reject" in names
         and re.match(
@@ -185,10 +194,10 @@ def route_fast_tool(text: str, tools: Iterable[Any] | None) -> ResponseFunctionT
     ):
         return _call(
             "speaker_memory_reject",
-            {"speaker_ref": speaker_ref, "person_id": person_id},
+            {"voice": voice},
         )
 
-    if speaker_ref and "speaker_memory_remember_name" in names:
+    if voice and "speaker_memory_remember_name" in names:
         match = re.match(
             r"^\s*(?:меня\s+зовут|зовут\s+меня|мо[её]\s+имя(?:\s*[-—–:]\s*)?|я(?:\s+это)?|my\s+name\s+is|call\s+me|i(?:\s+am|'m))\s+(.+?)\s*[.!?]*\s*$",
             utterance,
@@ -197,9 +206,9 @@ def route_fast_tool(text: str, tools: Iterable[Any] | None) -> ResponseFunctionT
         if match:
             name = _intro_name(match.group(1))
             if name:
-                return _call("speaker_memory_remember_name", {"speaker_ref": speaker_ref, "name": name})
+                return _call("speaker_memory_remember_name", {"voice": voice, "name": name})
 
-    if speaker_ref and "speaker_memory_remember_fact" in names:
+    if voice and "speaker_memory_remember_fact" in names:
         match = re.match(
             r"^\s*(?:запомни(?:,?\s+что)?|remember\s+that)\s+(.+?)\s*[.!?]*\s*$",
             utterance,
@@ -208,18 +217,18 @@ def route_fast_tool(text: str, tools: Iterable[Any] | None) -> ResponseFunctionT
         if match:
             fact = _clean(match.group(1))
             if fact:
-                return _call("speaker_memory_remember_fact", {"speaker_ref": speaker_ref, "fact": fact})
+                return _call("speaker_memory_remember_fact", {"voice": voice, "fact": fact})
 
-    if speaker_ref and "speaker_memory_recall" in names and re.search(
-        r"(?:что\s+ты\s+помнишь|что\s+ты\s+знаешь\s+обо\s+мне|как\s+меня\s+зовут|кто\s+я|вспомни|"
-        r"what\s+do\s+you\s+remember|what\s+do\s+you\s+know\s+about\s+me|what\s+is\s+my\s+name|who\s+am\s+i|"
+    if voice and "speaker_memory_recall" in names and re.search(
+        r"(?:что\s+ты\s+помнишь|что\s+ты\s+знаешь\s+обо\s+мне|вспомни|"
+        r"what\s+do\s+you\s+remember|what\s+do\s+you\s+know\s+about\s+me|"
         r"remember\s+about\s+me)",
         utterance,
         flags=re.IGNORECASE,
     ):
         return _call(
             "speaker_memory_recall",
-            {"speaker_ref": speaker_ref, "query": _clean(utterance, preserve_terminal_punctuation=True)},
+            {"voice": voice, "query": _clean(utterance, preserve_terminal_punctuation=True)},
         )
 
     if "web_search" in names:

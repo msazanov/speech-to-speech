@@ -74,6 +74,7 @@ from speech_to_speech.pipeline.queue_types import TextPromptItem
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 from speech_to_speech.pipeline.transcript_logging import log_exception, transcript_for_log
 from speech_to_speech.speaker_memory.context import add_speaker_context
+from speech_to_speech.speaker_memory.models import compact_voice_id
 from speech_to_speech.utils.utils import _generate_id
 
 logger = logging.getLogger(__name__)
@@ -672,7 +673,7 @@ class RealtimeService:
             person_id = event.speaker.candidate.person_id if event.speaker.candidate is not None else "unknown"
             logger.info(
                 "Speaker context injected voice=%s state=%s person_id=%s",
-                event.speaker.voice_id or "unknown",
+                compact_voice_id(event.speaker.voice_id),
                 event.speaker.state.value,
                 person_id,
             )
@@ -698,13 +699,13 @@ class RealtimeService:
 
         queue = self.text_prompt_queue
         if queue and transcript:
-            forced_tool_call = route_fast_tool(llm_transcript, cfg.session.tools)
+            forced_tool_call = route_fast_tool(llm_transcript, cfg.session.tools, speaker=event.speaker)
             if forced_tool_call is not None:
                 logger.info(
                     "Fast tool route name=%s turn=%s voice=%s",
                     forced_tool_call.name,
                     event.turn_id,
-                    event.speaker.voice_id if event.speaker is not None else "unknown",
+                    compact_voice_id(event.speaker.voice_id) if event.speaker is not None else "unknown",
                 )
             request = GenerateResponseRequest(
                 runtime_config=cfg,
@@ -714,6 +715,7 @@ class RealtimeService:
                 speech_stopped_at_s=event.speech_stopped_at_s,
                 forced_tool_call=forced_tool_call,
                 speaker_ref=event.speaker.speaker_ref if event.speaker is not None else None,
+                speaker_voice=event.speaker.voice_id if event.speaker is not None else None,
             )
             st.mark_response_pending(request.response_key)
             queue.put(request)
@@ -761,6 +763,7 @@ class RealtimeService:
                 turn_revision=event.turn_revision,
                 speech_stopped_at_s=event.speech_stopped_at_s,
                 speaker_ref=event.speaker.speaker_ref if event.speaker is not None else None,
+                speaker_voice=event.speaker.voice_id if event.speaker is not None else None,
                 speaker=event.speaker,
             )
             st.mark_response_pending(request.response_key)

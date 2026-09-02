@@ -6,137 +6,133 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any
 
-from .models import SpeakerReferenceError
+from .models import SpeakerReferenceError, compact_voice_id
 from .service import IdentityNotConfirmed, InvalidPersonCandidate, SpeakerMemoryService
 
 CREATE_RESPONSE = True
 
-_REFERENCE_PROPERTY = {
+_VOICE_PROPERTY = {
     "type": "string",
     "minLength": 4,
-    "description": "Short-lived speaker reference from trusted HuggingVoice context.",
-}
-_PERSON_PROPERTY = {
-    "type": "string",
-    "minLength": 3,
-    "description": "Candidate person ID returned by speaker_memory_inspect.",
+    "maxLength": 32,
+    "description": "Current 4-byte voice token.",
 }
 
 TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "speaker_memory_inspect",
-        "description": "Inspect the current speaker identity state before clarifying a name.",
+        "description": "Inspect current voice identity.",
         "parameters": {
             "type": "object",
-            "properties": {"speaker_ref": _REFERENCE_PROPERTY},
-            "required": ["speaker_ref"],
+            "properties": {"voice": _VOICE_PROPERTY},
+            "required": ["voice"],
             "additionalProperties": False,
         },
     },
     {
         "type": "function",
         "name": "speaker_memory_remember_name",
-        "description": "Remember a name explicitly given by the current speaker.",
+        "description": "Save the speaker's explicit name.",
         "parameters": {
             "type": "object",
             "properties": {
-                "speaker_ref": _REFERENCE_PROPERTY,
+                "voice": _VOICE_PROPERTY,
                 "name": {"type": "string", "minLength": 1, "maxLength": 80},
             },
-            "required": ["speaker_ref", "name"],
+            "required": ["voice", "name"],
             "additionalProperties": False,
         },
     },
     {
         "type": "function",
         "name": "speaker_memory_confirm",
-        "description": "Confirm that the current speaker is the proposed person after an affirmative answer.",
+        "description": "Confirm the current voice candidate.",
         "parameters": {
             "type": "object",
-            "properties": {"speaker_ref": _REFERENCE_PROPERTY, "person_id": _PERSON_PROPERTY},
-            "required": ["speaker_ref", "person_id"],
+            "properties": {"voice": _VOICE_PROPERTY},
+            "required": ["voice"],
             "additionalProperties": False,
         },
     },
     {
         "type": "function",
         "name": "speaker_memory_reject",
-        "description": "Reject a proposed person after the current speaker denies the match.",
+        "description": "Reject the current voice candidate.",
         "parameters": {
             "type": "object",
-            "properties": {"speaker_ref": _REFERENCE_PROPERTY, "person_id": _PERSON_PROPERTY},
-            "required": ["speaker_ref", "person_id"],
+            "properties": {"voice": _VOICE_PROPERTY},
+            "required": ["voice"],
             "additionalProperties": False,
         },
     },
     {
         "type": "function",
         "name": "speaker_memory_block_voice",
-        "description": "Ignore the current voice in future turns after the user explicitly identifies it as unwanted background audio.",
+        "description": "Blacklist the current voice.",
         "parameters": {
             "type": "object",
             "properties": {
-                "speaker_ref": _REFERENCE_PROPERTY,
+                "voice": _VOICE_PROPERTY,
                 "reason": {"type": "string", "minLength": 1, "maxLength": 80},
             },
-            "required": ["speaker_ref", "reason"],
+            "required": ["voice", "reason"],
             "additionalProperties": False,
         },
     },
     {
         "type": "function",
         "name": "speaker_memory_unblock_voice",
-        "description": "Remove the current voice from the background-audio blacklist after an explicit correction.",
+        "description": "Remove the voice from the blacklist.",
         "parameters": {
             "type": "object",
-            "properties": {"speaker_ref": _REFERENCE_PROPERTY},
-            "required": ["speaker_ref"],
+            "properties": {"voice": _VOICE_PROPERTY},
+            "required": ["voice"],
             "additionalProperties": False,
         },
     },
     {
         "type": "function",
         "name": "speaker_memory_remember_fact",
-        "description": "Remember a personal fact explicitly stated by the confirmed current speaker.",
+        "description": "Save a fact stated by the confirmed speaker.",
         "parameters": {
             "type": "object",
             "properties": {
-                "speaker_ref": _REFERENCE_PROPERTY,
+                "voice": _VOICE_PROPERTY,
                 "fact": {"type": "string", "minLength": 1, "maxLength": 500},
                 "topic": {"type": "string", "minLength": 1, "maxLength": 80},
             },
-            "required": ["speaker_ref", "fact"],
+            "required": ["voice", "fact"],
             "additionalProperties": False,
         },
     },
     {
         "type": "function",
         "name": "speaker_memory_recall",
-        "description": "Recall relevant private facts only for a confirmed current speaker.",
+        "description": "Recall private facts for the confirmed speaker.",
         "parameters": {
             "type": "object",
             "properties": {
-                "speaker_ref": _REFERENCE_PROPERTY,
+                "voice": _VOICE_PROPERTY,
                 "query": {"type": "string", "minLength": 1, "maxLength": 200},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
             },
-            "required": ["speaker_ref", "query"],
+            "required": ["voice", "query"],
             "additionalProperties": False,
         },
     },
     {
         "type": "function",
         "name": "speaker_memory_forget",
-        "description": "Forget one fact or all facts after an explicit request from the confirmed speaker.",
+        "description": "Forget requested private facts.",
         "parameters": {
             "type": "object",
             "properties": {
-                "speaker_ref": _REFERENCE_PROPERTY,
+                "voice": _VOICE_PROPERTY,
                 "scope": {"type": "string", "enum": ["fact", "facts"]},
                 "fact_id": {"type": "string", "minLength": 3},
             },
-            "required": ["speaker_ref", "scope"],
+            "required": ["voice", "scope"],
             "additionalProperties": False,
         },
     },
@@ -199,10 +195,8 @@ def _execute(
 ) -> Any:
     from speech_to_speech.api.openai_realtime.audio_client import ToolResult
 
-    speaker_ref = arguments.get("speaker_ref")
-    if not isinstance(speaker_ref, str):
-        raise ValueError("speaker_ref must be a string")
     try:
+        speaker_ref = _resolve_speaker_ref(service, conversation_id, arguments)
         if name == "speaker_memory_inspect":
             attribution = service.inspect(speaker_ref, conversation_id=conversation_id)
             create_response = True
@@ -214,52 +208,62 @@ def _execute(
             )
             create_response = False
         elif name == "speaker_memory_confirm":
+            candidate = service.inspect(speaker_ref, conversation_id=conversation_id).candidate
+            if candidate is None:
+                raise InvalidPersonCandidate("no candidate was proposed for this voice")
             attribution = service.confirm(
                 speaker_ref,
-                _required_string(arguments, "person_id"),
+                candidate.person_id,
                 conversation_id=conversation_id,
             )
             create_response = False
         elif name == "speaker_memory_reject":
+            candidate = service.inspect(speaker_ref, conversation_id=conversation_id).candidate
+            if candidate is None:
+                raise InvalidPersonCandidate("no candidate was proposed for this voice")
             attribution = service.reject(
                 speaker_ref,
-                _required_string(arguments, "person_id"),
+                candidate.person_id,
                 conversation_id=conversation_id,
             )
             create_response = False
         elif name == "speaker_memory_block_voice":
-            voice_id = service.set_voice_blocked(
+            before = service.inspect(speaker_ref, conversation_id=conversation_id)
+            service.set_voice_blocked(
                 speaker_ref,
                 blocked=True,
                 reason=_required_string(arguments, "reason"),
                 conversation_id=conversation_id,
             )
             return ToolResult(
-                output={"ok": True, "voice_id": voice_id, "blocked": True},
+                output=_compact_attribution(before),
                 create_response=False,
             )
         elif name == "speaker_memory_unblock_voice":
-            voice_id = service.set_voice_blocked(
+            before = service.inspect(speaker_ref, conversation_id=conversation_id)
+            service.set_voice_blocked(
                 speaker_ref,
                 blocked=False,
                 conversation_id=conversation_id,
             )
             return ToolResult(
-                output={"ok": True, "voice_id": voice_id, "blocked": False},
+                output=_compact_attribution(before),
                 create_response=False,
             )
         elif name == "speaker_memory_remember_fact":
-            fact = service.remember_fact(
+            service.remember_fact(
                 speaker_ref,
                 _required_string(arguments, "fact"),
                 topic=arguments.get("topic"),
                 conversation_id=conversation_id,
             )
+            attribution = service.inspect(speaker_ref, conversation_id=conversation_id)
             return ToolResult(
-                output={"ok": True, "fact": fact.model_dump(mode="json")},
+                output=_compact_attribution(attribution),
                 create_response=False,
             )
         elif name == "speaker_memory_recall":
+            attribution = service.inspect(speaker_ref, conversation_id=conversation_id)
             facts = service.recall(
                 speaker_ref,
                 query=_required_string(arguments, "query"),
@@ -267,17 +271,27 @@ def _execute(
                 conversation_id=conversation_id,
             )
             return ToolResult(
-                output={"ok": True, "facts": [fact.model_dump(mode="json") for fact in facts]},
+                output={
+                    **_compact_attribution(attribution),
+                    "facts": [
+                        {"topic": fact.topic, "fact": fact.fact}
+                        for fact in facts
+                    ],
+                },
                 create_response=True,
             )
         elif name == "speaker_memory_forget":
+            attribution = service.inspect(speaker_ref, conversation_id=conversation_id)
             deleted = service.forget(
                 speaker_ref,
                 scope=_required_string(arguments, "scope"),
                 fact_id=arguments.get("fact_id"),
                 conversation_id=conversation_id,
             )
-            return ToolResult(output={"ok": True, "deleted": deleted}, create_response=False)
+            return ToolResult(
+                output={**_compact_attribution(attribution), "deleted": deleted},
+                create_response=False,
+            )
         else:
             raise ValueError(f"unknown speaker memory tool: {name}")
     except Exception as exc:
@@ -289,9 +303,36 @@ def _execute(
             create_response=True,
         )
     return ToolResult(
-        output={"ok": True, "attribution": attribution.model_dump(mode="json", exclude_none=True)},
+        output=_compact_attribution(attribution),
         create_response=create_response,
     )
+
+
+def _compact_attribution(attribution: Any) -> dict[str, str]:
+    return {
+        "voice": compact_voice_id(attribution.voice_id),
+        "name": attribution.candidate.name if attribution.candidate is not None else "unknown",
+    }
+
+
+def _resolve_speaker_ref(
+    service: SpeakerMemoryService,
+    conversation_id: str,
+    arguments: dict[str, Any],
+) -> str:
+    """Translate the compact public token to a short-lived private reference.
+
+    ``speaker_ref`` remains accepted only as a compatibility path for older
+    local clients; it is no longer present in the model-visible schemas.
+    """
+
+    voice = arguments.get("voice")
+    if isinstance(voice, str) and voice.strip():
+        return service.resolve_reference_for_voice(voice, conversation_id=conversation_id)
+    legacy_ref = arguments.get("speaker_ref")
+    if isinstance(legacy_ref, str) and legacy_ref.strip():
+        return legacy_ref
+    raise ValueError("voice must be a string")
 
 
 def _required_string(arguments: dict[str, Any], key: str) -> str:

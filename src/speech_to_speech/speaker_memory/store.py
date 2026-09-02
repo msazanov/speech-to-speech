@@ -26,6 +26,7 @@ from .models import (
     SupersededSpeakerReference,
     UnknownSpeakerReference,
     VoiceCluster,
+    compact_voice_id,
 )
 
 
@@ -692,6 +693,45 @@ class SpeakerMemoryStore:
             expires_at=row["expires_at"],
         )
 
+    def resolve_reference_for_voice(self, voice: str, *, conversation_id: str) -> SpeakerReference:
+        """Resolve the current turn authority from its compact public voice token.
+
+        The model/UI never needs the long-lived ``speaker_ref``.  References are
+        invalidated before every final turn, so the newest active reference for
+        this conversation is the only mutation authority that can match the
+        token.  Matching both the source and canonical IDs keeps a just-merged
+        turn usable while aliases are being resolved.
+        """
+
+        token = compact_voice_id(voice)
+        if token == "unknown":
+            raise UnknownSpeakerReference("voice token is unknown")
+        now = self.clock()
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT r.ref, r.observation_id, r.conversation_id, r.expires_at, o.voice_id
+                   FROM speaker_references AS r
+                   JOIN speaker_observations AS o ON o.id = r.observation_id
+                   WHERE r.conversation_id = ?
+                   ORDER BY o.created_at DESC, o.rowid DESC""",
+                (conversation_id,),
+            ).fetchall()
+        for row in rows:
+            if now >= row["expires_at"]:
+                continue
+            raw_voice_id = str(row["voice_id"])
+            canonical_voice_id = self.resolve_voice_id(raw_voice_id)
+            if token not in {compact_voice_id(raw_voice_id), compact_voice_id(canonical_voice_id)}:
+                continue
+            return SpeakerReference(
+                value=row["ref"],
+                observation_id=row["observation_id"],
+                voice_id=raw_voice_id,
+                conversation_id=row["conversation_id"],
+                expires_at=row["expires_at"],
+            )
+        raise UnknownSpeakerReference("voice token does not belong to the current turn")
+
     def invalidate_references(self, conversation_id: str) -> int:
         """Revoke prior turn capabilities before routing a new final segment."""
 
@@ -701,6 +741,40 @@ class SpeakerMemoryStore:
                 (conversation_id,),
             )
         return max(cursor.rowcount, 0)
+
+    def recent_voice_ids(self, conversation_id: str, *, limit: int = 32) -> list[str]:
+        """Return distinct source voice IDs from the latest conversation turns."""
+
+        if limit < 1:
+            raise ValueError("recent voice limit must be positive")
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT voice_id
+                   FROM speaker_observations
+                   WHERE conversation_id = ?
+                   ORDER BY created_at DESC, rowid DESC
+                   LIMIT ?""",
+                (conversation_id, limit),
+            ).fetchall()
+        seen: set[str] = set()
+        result: list[str] = []
+        for row in rows:
+            voice_id = str(row["voice_id"])
+            if voice_id not in seen:
+                seen.add(voice_id)
+                result.append(voice_id)
+        return result
+
+    def voice_similarity(self, first_voice_id: str, second_voice_id: str) -> float:
+        """Compare two canonical voice banks using centroids and prototypes."""
+
+        first = self.get_voice_cluster(self.resolve_voice_id(first_voice_id))
+        second = self.get_voice_cluster(self.resolve_voice_id(second_voice_id))
+        if first.centroid.size != second.centroid.size:
+            return -1.0
+        first_vectors = [first.centroid, *self.get_voice_prototypes(first.id)]
+        second_vectors = [second.centroid, *self.get_voice_prototypes(second.id)]
+        return max(float(np.dot(left, right)) for left in first_vectors for right in second_vectors)
 
     def create_person(self, name: str, *, reuse: bool = True) -> Person:
         display_name = " ".join(name.split())

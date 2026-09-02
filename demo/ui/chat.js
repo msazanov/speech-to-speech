@@ -22,10 +22,11 @@ const WRENCH_PATH = `<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l
 const CHAT_BUBBLE_SVG = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
 const EMPTY_STATE_HTML = `<div id="chat-empty" class="chat-empty">${CHAT_BUBBLE_SVG}<span class="chat-empty-title">No messages yet</span><span class="chat-empty-hint">Tap the orb and start talking</span></div>`;
 
-/** @param {{ voice_id?: string, state?: string, person?: { name?: string } } | null | undefined} speaker */
+/** @param {{ voice?: string, name?: string, voice_id?: string, state?: string, person?: { name?: string } } | null | undefined} speaker */
 export function speakerDisplayLabel(speaker) {
+  if (speaker?.name && speaker.name !== "unknown") return speaker.name;
   if (speaker?.state === "known" && speaker.person?.name) return speaker.person.name;
-  return speaker?.voice_id || "Unknown voice";
+  return speaker?.voice || speaker?.voice_id || "Unknown voice";
 }
 
 /** @param {string | null | undefined} voiceId */
@@ -39,9 +40,9 @@ export function speakerDisplayColor(voiceId) {
   return `hsl(${Math.abs(hash) % 360} 78% 66%)`;
 }
 
-/** @param {{ voice_id?: string, person?: { person_id?: string } } | null | undefined} speaker */
+/** @param {{ voice?: string, name?: string, voice_id?: string, person?: { person_id?: string } } | null | undefined} speaker */
 export function speakerIdentityColorKey(speaker) {
-  return speaker?.person?.person_id || speaker?.voice_id || "unknown";
+  return speaker?.person?.person_id || speaker?.voice || speaker?.voice_id || "unknown";
 }
 
 export class ChatView {

@@ -9,6 +9,24 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict
 
 
+def compact_voice_id(voice_id: str | None) -> str:
+    """Return the eight-hex-character (four-byte) public voice token.
+
+    Database IDs are intentionally left untouched so existing aliases and
+    persisted references remain valid.  The compact token is the only form
+    exposed to the model/UI and is therefore cheap to repeat in every turn.
+    """
+
+    if not isinstance(voice_id, str) or not voice_id.strip():
+        return "unknown"
+    raw = voice_id.strip().casefold()
+    if raw.startswith("v_"):
+        raw = raw[2:]
+    if len(raw) < 8 and raw and all(char in "0123456789abcdef" for char in raw):
+        raw = raw.rjust(8, "0")
+    return raw[:8] or "unknown"
+
+
 class SpeakerState(str, Enum):
     """Identity state visible to the conversation policy."""
 

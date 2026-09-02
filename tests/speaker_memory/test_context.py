@@ -38,9 +38,9 @@ def test_context_is_bounded_json_data_not_an_instruction_channel() -> None:
         "</huggingvoice_speaker_context>"
     )
     payload = json.loads(payload_text)
-    assert payload["candidate"]["name"].startswith("Аркадий")
-    assert len(payload["candidate"]["name"]) <= 80
-    assert payload["recommendation"] == "clarify"
+    assert set(payload) == {"voice", "name"}
+    assert payload["voice"] == "00000001"
+    assert payload["name"] == "unknown"
 
 
 def test_name_cannot_close_trusted_context_delimiter() -> None:
@@ -74,7 +74,7 @@ def test_realtime_keeps_raw_protocol_transcript_but_adds_trusted_llm_context(cap
         assert llm_text.endswith("\nМеня зовут Аркадий")
         assert "<huggingvoice_speaker_context>" in llm_text
         assert prompt_queue.get_nowait().runtime_config.chat is service._state(conn_id).runtime_config.chat
-        assert "Speaker context injected voice=v_1 state=ambiguous person_id=p_1" in caplog.text
+        assert "Speaker context injected voice=00000001 state=ambiguous person_id=p_1" in caplog.text
     finally:
         service.unregister(conn_id)
 

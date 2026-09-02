@@ -28,13 +28,21 @@ class RecordingService:
     def __init__(self) -> None:
         self.calls = []
 
+    @staticmethod
+    def resolve_reference_for_voice(voice, *, conversation_id):
+        return voice
+
+    @staticmethod
+    def _attribution():
+        return SimpleNamespace(voice_id="v_deadbeaf", candidate=None)
+
     def inspect(self, speaker_ref, *, conversation_id):
         self.calls.append(("inspect", speaker_ref, conversation_id))
-        return SimpleNamespace(model_dump=lambda **_kwargs: {"state": "unknown"})
+        return self._attribution()
 
     def remember_name(self, speaker_ref, name, *, conversation_id):
         self.calls.append(("remember_name", speaker_ref, name, conversation_id))
-        return SimpleNamespace(model_dump=lambda **_kwargs: {"state": "known"})
+        return self._attribution()
 
     def confirm(self, speaker_ref, person_id, *, conversation_id):
         self.calls.append(("confirm", speaker_ref, person_id, conversation_id))
@@ -89,10 +97,10 @@ def test_mcp_adapter_delegates_to_service_with_bound_conversation(monkeypatch) -
     service = RecordingService()
     server = build_mcp_server(service, conversation_id_provider=lambda: "conv_bound")
 
-    result = server.functions["speaker_memory_remember_name"]("sr_1", "Аркадий")
+    result = server.functions["speaker_memory_remember_name"]("deadbeaf", "Аркадий")
 
-    assert result == {"state": "known"}
-    assert service.calls == [("remember_name", "sr_1", "Аркадий", "conv_bound")]
+    assert result == {"voice": "deadbeaf", "name": "unknown"}
+    assert service.calls == [("remember_name", "deadbeaf", "Аркадий", "conv_bound")]
 
 
 def test_importing_adapter_does_not_require_optional_mcp_sdk() -> None:
@@ -107,6 +115,6 @@ def test_mcp_adapter_returns_structured_retryable_database_lock(monkeypatch) -> 
     )
     server = build_mcp_server(service, conversation_id_provider=lambda: "conv_1")
 
-    result = server.functions["speaker_memory_inspect"]("sr_1")
+    result = server.functions["speaker_memory_inspect"]("deadbeaf")
 
     assert result == {"ok": False, "error": "speaker_memory_busy", "retryable": True}

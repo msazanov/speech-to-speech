@@ -60,6 +60,7 @@ from speech_to_speech.pipeline.messages import (
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 from speech_to_speech.pipeline.transcript_logging import log_exception, structured_for_log, transcript_for_log
 from speech_to_speech.speaker_memory.context import format_speaker_context
+from speech_to_speech.speaker_memory.models import compact_voice_id
 from speech_to_speech.utils.utils import is_out_of_band, response_wants_audio
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,7 @@ class _Turn(BaseModel):
     history_anchor_id: str | None = None
     forced_tool_call: ResponseFunctionToolCall | None = None
     speaker_ref: str | None = None
+    speaker_voice: str | None = None
 
 
 class _GenState(BaseModel):
@@ -672,7 +674,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
 
         Out-of-band turns never touch the default conversation, and a stale turn
         records nothing (it is not forwarded to the client either)."""
-        item = self._inject_speaker_ref(item, turn.speaker_ref)
+        item = self._inject_speaker_voice(item, turn.speaker_voice)
         state.tools.append(item)
         fc_item = RealtimeConversationItemFunctionCall(
             type="function_call",
@@ -708,15 +710,9 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         yield self._chunk(turn, tools=[item])
 
     @staticmethod
-    def _inject_speaker_ref(item: ResponseFunctionToolCall, speaker_ref: str | None) -> ResponseFunctionToolCall:
-        """Complete a model tool call with trusted turn metadata, never model data.
-
-        A model-generated ``speaker_ref`` is untrusted: it may be stale or
-        copied from the conversation. Always replace it with the short-lived
-        reference issued for this audio turn before a memory tool reaches the
-        executor.
-        """
-        if not speaker_ref or not item.name.startswith("speaker_memory_"):
+    def _inject_speaker_voice(item: ResponseFunctionToolCall, speaker_voice: str | None) -> ResponseFunctionToolCall:
+        """Replace model-provided voice data with the trusted current turn token."""
+        if not speaker_voice or not item.name.startswith("speaker_memory_"):
             return item
         try:
             arguments = json.loads(item.arguments or "{}")
@@ -724,7 +720,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             return item
         if not isinstance(arguments, dict):
             return item
-        arguments["speaker_ref"] = speaker_ref
+        arguments["voice"] = compact_voice_id(speaker_voice)
+        arguments.pop("speaker_ref", None)
         return item.model_copy(
             update={"arguments": json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))}
         )
@@ -1283,6 +1280,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             history_anchor_id=history_anchor_id,
             forced_tool_call=request.forced_tool_call,
             speaker_ref=request.speaker_ref,
+            speaker_voice=request.speaker_voice or (request.speaker.voice_id if request.speaker is not None else None),
         )
         yield from self._generate(
             active_chat,
@@ -1380,6 +1378,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             history_anchor_id=history_anchor_id,
             forced_tool_call=request.forced_tool_call,
             speaker_ref=request.speaker_ref,
+            speaker_voice=request.speaker_voice or (request.speaker.voice_id if request.speaker is not None else None),
         )
         yield from self._generate(active_chat, original_chat, turn, optional_kwargs)
 

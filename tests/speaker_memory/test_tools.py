@@ -48,7 +48,8 @@ def test_mutation_tools_never_accept_raw_voice_id_or_numeric_weight() -> None:
         "speaker_memory_unblock_voice",
     ):
         properties = tool_schema(name)["parameters"]["properties"]
-        assert "speaker_ref" in properties
+        assert "voice" in properties
+        assert "speaker_ref" not in properties
         assert "voice_id" not in properties
         assert "weight" not in properties
 
@@ -61,7 +62,7 @@ async def test_agent_can_block_and_immediately_unblock_current_voice_by_referenc
         "speaker_memory_block_voice",
         {"speaker_ref": attributed.speaker_ref, "reason": "background_tv"},
     )
-    assert blocked.output == {"ok": True, "voice_id": attributed.voice_id, "blocked": True}
+    assert blocked.output == {"voice": attributed.voice_id.removeprefix("v_")[:8], "name": "unknown"}
     assert blocked.create_response is False
     assert store.is_voice_blocked(attributed.voice_id) is True
 
@@ -69,7 +70,7 @@ async def test_agent_can_block_and_immediately_unblock_current_voice_by_referenc
         "speaker_memory_unblock_voice",
         {"speaker_ref": attributed.speaker_ref},
     )
-    assert unblocked.output == {"ok": True, "voice_id": attributed.voice_id, "blocked": False}
+    assert unblocked.output == {"voice": attributed.voice_id.removeprefix("v_")[:8], "name": "unknown"}
     assert unblocked.create_response is False
     assert store.is_voice_blocked(attributed.voice_id) is False
 
@@ -82,10 +83,9 @@ async def test_remember_and_reject_use_fixed_evidence_without_automatic_followup
         "speaker_memory_remember_name",
         {"speaker_ref": attributed.speaker_ref, "name": "Аркадий"},
     )
-    person_id = remembered.output["attribution"]["candidate"]["person_id"]
     rejected = await execute_tool(
         "speaker_memory_reject",
-        {"speaker_ref": attributed.speaker_ref, "person_id": person_id},
+        {"speaker_ref": attributed.speaker_ref},
     )
 
     assert isinstance(remembered, ToolResult)
@@ -100,7 +100,7 @@ async def test_confirm_rejects_person_not_proposed_for_reference(tool_runtime) -
 
     result = await execute_tool(
         "speaker_memory_confirm",
-        {"speaker_ref": attributed.speaker_ref, "person_id": "p_hallucinated"},
+        {"speaker_ref": attributed.speaker_ref},
     )
 
     assert result.create_response is True
@@ -133,9 +133,9 @@ async def test_inspect_requests_followup_and_returns_no_embedding(tool_runtime) 
     result = await execute_tool("speaker_memory_inspect", {"speaker_ref": attributed.speaker_ref})
 
     assert result.create_response is True
-    assert result.output["ok"] is True
-    assert "centroid" not in str(result.output)
-    assert "embedding" not in str(result.output)
+    assert set(result.output) == {"voice", "name"}
+    assert result.output["voice"] == attributed.voice_id.removeprefix("v_")[:8]
+    assert result.output["name"] == "unknown"
 
 
 @pytest.mark.asyncio
