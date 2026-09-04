@@ -31,6 +31,10 @@ const DEFAULT_TTS_BACKEND = "silero";
 const DEFAULT_VOICE = "xenia";
 const DEFAULT_INSTRUCTIONS = "You are a friendly voice assistant.";
 const DEFAULT_LLM_MODEL = "gemma-4-e2b";
+const DEFAULT_DIRECT_URL = "ws://127.0.0.1:8765";
+const DEFAULT_STARTUP_GREETING =
+  "Start the conversation now with a brief, spontaneous greeting in character. " +
+  "Keep it to one sentence, invite the user in naturally, and vary the wording each time.";
 
 const STORAGE_KEYS = {
   // Direct s2s server URL, used only when the deploy has no LOAD_BALANCER_URL
@@ -121,7 +125,7 @@ function loadSettings() {
   const storedBackend = localStorage.getItem(STORAGE_KEYS.ttsBackend) || storedSelection.backend;
   const selection = decodeTtsSelection(encodeTtsSelection(storedBackend, storedSelection.voice));
   return {
-    directUrl: localStorage.getItem(STORAGE_KEYS.directUrl) || "",
+    directUrl: localStorage.getItem(STORAGE_KEYS.directUrl) || DEFAULT_DIRECT_URL,
     ttsBackend: selection.backend,
     voice: selection.voice,
     llmModel: localStorage.getItem(STORAGE_KEYS.llmModel) || DEFAULT_LLM_MODEL,
@@ -342,7 +346,7 @@ let rtcAvailable = false;
 let iceServers = [];
 // Optional hidden user prompt supplied by the deployment. When non-empty, the
 // client asks the model to greet once after the initial session configuration.
-let startupGreeting = "";
+  let startupGreeting = DEFAULT_STARTUP_GREETING;
 // Transport of the LIVE (or starting) conversation — as opposed to
 // `settings.transport`, which is what the NEXT one will use. Drives the
 // camera-snapshot size budget while a call is running.

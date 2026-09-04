@@ -6,7 +6,7 @@ OpenAI-compatible endpoint FreeToken:
 - VAD: Silero VAD + Smart Turn, CPU;
 - STT: GigaAM Multilingual CTC ONNX INT8, CPU, 6 потоков;
 - Speaker memory: подготовленный CAM++/3D-Speaker ONNX, CPU, 1 поток, локальная SQLite;
-- LLM: FreeToken arbiter `http://127.0.0.1:1919/v1`, модель `gemma-4-e2b`;
+- LLM: FreeToken arbiter `http://127.0.0.1:1919/v1`, модели `gemma-4-e2b` и `LFM2.5-2.6B`;
 - TTS: выбираемые из браузера Silero `v5_5_ru` и RHVoice, CPU; Supertonic загружается лениво только для английского Silero fallback;
 - Realtime API: `127.0.0.1:8765`.
 
@@ -36,8 +36,8 @@ cd /home/random/dev/huggingvoice
 ## Зависимость от FreeToken arbiter
 
 HuggingVoice не запускает и не останавливает LLM. FreeToken владеет портом
-`1919`, очередью и фактической загрузкой моделей. Сейчас интерфейс намеренно
-ограничен моделью `gemma-4-e2b`; список допустимых id задаётся
+`1919`, очередью и фактической загрузкой моделей. По умолчанию интерфейсу
+доступны модели `gemma-4-e2b` и `LFM2.5-2.6B`; список допустимых id задаётся
 `S2S_LLM_MODELS` и должен совпадать с `GET /v1/models`.
 
 Во время разговора интерфейс показывает этап подключения, ожидания модели,

@@ -116,7 +116,11 @@ DEFAULT_STARTUP_GREETING = (
 # Exposed to the browser through /api/config. Set an empty value to disable the
 # automatic greeting without changing the client bundle.
 STARTUP_GREETING = os.environ.get("STARTUP_GREETING", DEFAULT_STARTUP_GREETING).strip()
-LLM_MODELS = tuple(item.strip() for item in os.environ.get("S2S_LLM_MODELS", "gemma-4-e2b").split(",") if item.strip())
+LLM_MODELS = tuple(
+    item.strip()
+    for item in os.environ.get("S2S_LLM_MODELS", "gemma-4-e2b,LFM2.5-2.6B").split(",")
+    if item.strip()
+)
 LLM_MODEL_LABELS = {"gemma-4-e2b": "Gemma 4 E2B", "LFM2.5-2.6B": "LFM2.5 2.6B"}
 
 
