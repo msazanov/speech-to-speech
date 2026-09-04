@@ -75,7 +75,7 @@ PREFETCH_WORKER_ACQUIRE_TIMEOUT_S = 0.05
 PROVIDER_FAILURE_FALLBACK = "I'm having trouble responding right now. Please try again."
 # A provider may emit a tiny reasoning preamble even for a trivial answer. Do
 # not turn that first token into audible filler; acknowledge only sustained work.
-THINKING_ACK_MIN_REASONING_CHARS = 240
+THINKING_ACK_MIN_REASONING_CHARS = 1000
 
 
 # ── Normalised provider events ────────────────────────────────────────────────
