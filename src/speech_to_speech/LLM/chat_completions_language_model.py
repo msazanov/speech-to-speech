@@ -37,6 +37,7 @@ from speech_to_speech.LLM.base_openai_compatible_language_model import (
 )
 from speech_to_speech.LLM.chat import Chat
 from speech_to_speech.LLM.compaction_prompt import CompactGenerateFn
+from speech_to_speech.LLM.adaptive_reasoning import reasoning_decision
 from speech_to_speech.utils.utils import _generate_id
 
 logger = logging.getLogger(__name__)
@@ -429,12 +430,45 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         return optional_kwargs
 
     def _request(self, api_input: list[dict[str, Any]], optional_kwargs: dict[str, Any]) -> Any:
+        extra_body = self._extra_body
+        if self.thinking_mode == "auto":
+            user_text = ""
+            for message in reversed(api_input):
+                if message.get("role") != "user":
+                    continue
+                content = message.get("content")
+                if isinstance(content, str):
+                    user_text = content
+                elif isinstance(content, list):
+                    user_text = " ".join(
+                        str(part.get("text", ""))
+                        for part in content
+                        if isinstance(part, dict) and part.get("type") in {"text", "input_text"}
+                    )
+                break
+            if user_text:
+                use_reasoning, reason = reasoning_decision(user_text)
+                mode = "adaptive" if use_reasoning else "disabled"
+                extra_body = self._build_extra_body(
+                    str(self.client.base_url),
+                    True,
+                    self.reasoning_effort,
+                    "on" if use_reasoning else "off",
+                )
+                logger.info(
+                    "LLM reasoning decision mode=%s reason=%s text_chars=%d",
+                    mode,
+                    reason,
+                    len(user_text),
+                )
+            else:
+                logger.info("LLM reasoning decision mode=adaptive reason=audio_or_nontext_input")
         return _request_chat_completions(
             client=self.client,
             model_name=self.active_model_name,
             messages=api_input,
             stream=self.stream,
-            extra_body=self._extra_body,
+            extra_body=extra_body,
             timeout=self.request_timeout,
             optional_kwargs=optional_kwargs,
         )

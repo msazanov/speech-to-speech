@@ -119,9 +119,14 @@ def make_handler(endpoint: DelayedChatEndpoint, *, timeout_s: float) -> ChatComp
     )
 
 
-def generate_once(handler: ChatCompletionsApiModelHandler, *, model: str | None = None) -> list[object]:
+def generate_once(
+    handler: ChatCompletionsApiModelHandler,
+    *,
+    model: str | None = None,
+    user_text: str = "Ответь кратко",
+) -> list[object]:
     chat = Chat(4)
-    chat.add_item(make_user_message("Ответь кратко"))
+    chat.add_item(make_user_message(user_text))
     runtime_config = RuntimeConfig(
         chat=chat,
         session=RealtimeSessionCreateRequest(
@@ -156,7 +161,7 @@ def test_arbiter_timeout_does_not_retry_request() -> None:
     assert any(isinstance(output, EndOfResponse) and output.error is not None for output in outputs)
 
 
-def test_adaptive_thinking_is_forwarded_without_forcing_reasoning() -> None:
+def test_adaptive_thinking_skips_reasoning_for_simple_query() -> None:
     with DelayedChatEndpoint(generation_delay_s=0.0) as endpoint:
         handler = ChatCompletionsApiModelHandler(
             threading.Event(),
@@ -176,7 +181,33 @@ def test_adaptive_thinking_is_forwarded_without_forcing_reasoning() -> None:
         generate_once(handler)
 
     generation_request = endpoint.requests[-1]
-    assert generation_request["chat_template_kwargs"] == {"thinking_mode": "adaptive"}
+    assert generation_request["chat_template_kwargs"] == {
+        "enable_thinking": False,
+        "thinking_mode": "disabled",
+    }
+
+
+def test_adaptive_thinking_enables_reasoning_for_multistep_query() -> None:
+    with DelayedChatEndpoint(generation_delay_s=0.0) as endpoint:
+        handler = ChatCompletionsApiModelHandler(
+            threading.Event(),
+            queue.Queue(),
+            queue.Queue(),
+            setup_kwargs={
+                "model_name": "gemma-4-e2b",
+                "base_url": endpoint.base_url,
+                "api_key": "local",
+                "stream": True,
+                "disable_thinking": False,
+                "thinking_mode": "auto",
+                "request_timeout_s": 0.5,
+                "max_retries": 0,
+            },
+        )
+        generate_once(handler, user_text="сравни два варианта и составь пошаговый план")
+
+    generation_request = endpoint.requests[-1]
+    assert generation_request["chat_template_kwargs"] == {"thinking_mode": "enabled", "enable_thinking": True}
 
 
 def test_selected_runtime_model_is_sent_to_generation_but_not_warmup() -> None:
