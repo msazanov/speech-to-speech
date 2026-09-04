@@ -271,7 +271,7 @@ async def freetoken_logs(since: float | None = None):
         return {"available": False, "cursor": now, "lines": []}
     lines = [
         line for line in stdout.decode("utf-8", "replace").splitlines()
-        if line.strip() != "-- No entries --"
+        if line.strip() != "-- No entries --" and "/engine/logs/tail" not in line
     ]
     return {"available": process.returncode == 0, "cursor": now, "lines": lines}
 
