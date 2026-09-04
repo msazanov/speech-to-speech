@@ -9,6 +9,7 @@ Type=simple
 WorkingDirectory=/home/random/dev/huggingvoice
 Environment=PYTHONUNBUFFERED=1 SPEECH_TO_SPEECH_URL=ws://127.0.0.1:8765/v1/realtime
 EnvironmentFile=-%h/.config/huggingvoice/web.env
+ExecStartPre=/home/random/dev/huggingvoice/scripts/wait-for-speech.sh http://127.0.0.1:8765
 ExecStart=/home/random/dev/huggingvoice/.venv/bin/uvicorn --app-dir demo server:app --host 127.0.0.1 --port 7860
 Restart=on-failure
 RestartSec=3
