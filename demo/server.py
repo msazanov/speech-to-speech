@@ -116,6 +116,8 @@ DEFAULT_STARTUP_GREETING = (
 # Exposed to the browser through /api/config. Set an empty value to disable the
 # automatic greeting without changing the client bundle.
 STARTUP_GREETING = os.environ.get("STARTUP_GREETING", DEFAULT_STARTUP_GREETING).strip()
+LLM_MODELS = tuple(item.strip() for item in os.environ.get("S2S_LLM_MODELS", "gemma-4-e2b").split(",") if item.strip())
+LLM_MODEL_LABELS = {"gemma-4-e2b": "Gemma 4 E2B", "LFM2.5-2.6B": "LFM2.5 2.6B"}
 
 
 def _webrtc_calls_url(s2s_url: str) -> str:
@@ -225,6 +227,7 @@ def config():
         "rtc": bool(SPEECH_TO_SPEECH_URL),
         "iceServers": RTC_ICE_SERVERS,
         "startupGreeting": STARTUP_GREETING,
+        "llmModels": [{"id": model, "label": LLM_MODEL_LABELS.get(model, model)} for model in LLM_MODELS],
         "speakerMemoryTools": SPEAKER_MEMORY_TOOLS if SPEECH_TO_SPEECH_URL else [],
         "auth": AUTH_ENABLED,
     }

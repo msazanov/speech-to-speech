@@ -9,6 +9,7 @@ import os
 import wave
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterator
+from contextvars import ContextVar
 from queue import Empty, Full, Queue
 from threading import BoundedSemaphore, Lock, Thread, Timer, current_thread
 from threading import Event as ThreadingEvent
@@ -139,6 +140,7 @@ class _Turn(BaseModel):
     forced_tool_call: ResponseFunctionToolCall | None = None
     speaker_ref: str | None = None
     speaker_voice: str | None = None
+    model_name: str
 
 
 class _GenState(BaseModel):
@@ -170,6 +172,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
     """
 
     supports_session_prefill = False
+    _request_model: ContextVar[str | None] = ContextVar("request_model", default=None)
 
     # ── setup ─────────────────────────────────────────────────────────────────
 
@@ -257,6 +260,16 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         self._session_prefill_done.set()
         self.compactor = build_compactor(self._build_compaction_generate_fn()) if compact_history else None
         self.warmup()
+
+    @property
+    def active_model_name(self) -> str:
+        """Return the model selected for the current request, if any."""
+        return self._request_model.get() or self.model_name
+
+    def model_for_runtime_config(self, runtime_config: Any) -> str:
+        """Read the validated per-session model, falling back to startup config."""
+        selected = getattr(runtime_config.session, "model", None)
+        return selected if isinstance(selected, str) and selected.strip() else self.model_name
 
     @staticmethod
     def _is_official_openai(base_url: Optional[str]) -> bool:
@@ -378,6 +391,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         tools: Any,
         tool_choice: Any,
         *,
+        model_name: str | None = None,
         debounce_ms: int | None = None,
     ) -> bool:
         """Warm the provider's prompt/KV prefix for the current session.
@@ -398,10 +412,11 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             instructions or "",
             language_name="Russian" if self.enable_lang_prompt else None,
         )
+        selected_model = model_name if isinstance(model_name, str) and model_name.strip() else self.model_name
         try:
             fingerprint = json.dumps(
                 {
-                    "model": self.model_name,
+                    "model": selected_model,
                     "instructions": full_instructions,
                     "tools": tools or [],
                     "tool_choice": tool_choice,
@@ -411,7 +426,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 default=str,
             )
         except Exception:
-            fingerprint = repr((self.model_name, full_instructions, tools, tool_choice))
+            fingerprint = repr((selected_model, full_instructions, tools, tool_choice))
         delay = self.session_prefill_debounce_ms if debounce_ms is None else max(0, int(debounce_ms))
         with self._session_prefill_lock:
             if fingerprint == self._session_prefill_fingerprint:
@@ -423,23 +438,23 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             timer = Timer(
                 delay / 1000.0,
                 self._run_session_prefill,
-                args=(full_instructions, tools or [], tool_choice),
+                args=(full_instructions, tools or [], tool_choice, selected_model),
             )
             timer.daemon = True
             self._session_prefill_timer = timer
             timer.start()
         logger.info(
             "LLM session prefill scheduled model=%s debounce_ms=%d tools=%d",
-            self.model_name,
+            selected_model,
             delay,
             len(tools or []),
         )
         return True
 
-    def _run_session_prefill(self, instructions: str, tools: Any, tool_choice: Any) -> None:
+    def _run_session_prefill(self, instructions: str, tools: Any, tool_choice: Any, model_name: str) -> None:
         def perform() -> None:
             try:
-                self._perform_session_prefill(instructions, tools, tool_choice)
+                self._perform_session_prefill(instructions, tools, tool_choice, model_name)
             except Exception as exc:
                 logger.warning("Session prefill failed: %s", exc)
             finally:
@@ -453,7 +468,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             logger.warning("Session prefill failed: %s", exc)
             self._session_prefill_done.set()
 
-    def _perform_session_prefill(self, instructions: str, tools: Any, tool_choice: Any) -> None:
+    def _perform_session_prefill(self, instructions: str, tools: Any, tool_choice: Any, model_name: str) -> None:
         """Backend hook for a one-token, non-streaming prefix request."""
         raise NotImplementedError
 
@@ -1027,7 +1042,11 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                         nonlocal provider_request_started, provider_started_at_s
                         provider_request_started = True
                         provider_started_at_s = perf_counter()
-                        return (request_fn or self._request)(api_input, optional_kwargs)
+                        token = self._request_model.set(turn.model_name)
+                        try:
+                            return (request_fn or self._request)(api_input, optional_kwargs)
+                        finally:
+                            self._request_model.reset(token)
 
                     if turn.forced_tool_call is not None:
                         provider_request_started = True
@@ -1334,6 +1353,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             forced_tool_call=request.forced_tool_call,
             speaker_ref=request.speaker_ref,
             speaker_voice=request.speaker_voice or (request.speaker.voice_id if request.speaker is not None else None),
+            model_name=self.model_for_runtime_config(runtime_config),
         )
         yield from self._generate(
             active_chat,
@@ -1432,6 +1452,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             forced_tool_call=request.forced_tool_call,
             speaker_ref=request.speaker_ref,
             speaker_voice=request.speaker_voice or (request.speaker.voice_id if request.speaker is not None else None),
+            model_name=self.model_for_runtime_config(runtime_config),
         )
         yield from self._generate(active_chat, original_chat, turn, optional_kwargs)
 

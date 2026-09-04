@@ -134,7 +134,7 @@ class ResponsesApiModelHandler(BaseOpenAICompatibleHandler):
     ) -> Any:
         return _request_chat_completions(
             client=self.client,
-            model_name=self.model_name,
+            model_name=self.active_model_name,
             messages=api_input,
             stream=self.stream,
             extra_body=self._extra_body,

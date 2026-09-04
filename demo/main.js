@@ -30,12 +30,14 @@ import {
 const DEFAULT_TTS_BACKEND = "silero";
 const DEFAULT_VOICE = "xenia";
 const DEFAULT_INSTRUCTIONS = "You are a friendly voice assistant.";
+const DEFAULT_LLM_MODEL = "gemma-4-e2b";
 
 const STORAGE_KEYS = {
   // Direct s2s server URL, used only when the deploy has no LOAD_BALANCER_URL
   // (in LB mode the browser never learns the LB address — it POSTs /api/session).
   directUrl: "s2s.ws.directUrl",
   ttsBackend: "s2s.ws.ttsBackend",
+  llmModel: "s2s.ws.llmModel",
   voice: "s2s.ws.voice",
   instructions: "s2s.ws.instructions",
   tools: "s2s.ws.tools",
@@ -121,6 +123,7 @@ function loadSettings() {
     directUrl: localStorage.getItem(STORAGE_KEYS.directUrl) || "",
     ttsBackend: selection.backend,
     voice: selection.voice,
+    llmModel: localStorage.getItem(STORAGE_KEYS.llmModel) || DEFAULT_LLM_MODEL,
     instructions: localStorage.getItem(STORAGE_KEYS.instructions) || DEFAULT_INSTRUCTIONS,
     noiseGate: loadGateThreshold(),
     // Default WebSocket: the proven path stays the first-run experience.
@@ -147,6 +150,7 @@ function loadGateThreshold() {
 function saveSettings(s) {
   localStorage.setItem(STORAGE_KEYS.directUrl, s.directUrl);
   localStorage.setItem(STORAGE_KEYS.ttsBackend, s.ttsBackend);
+  localStorage.setItem(STORAGE_KEYS.llmModel, s.llmModel);
   localStorage.setItem(STORAGE_KEYS.voice, encodeTtsSelection(s.ttsBackend, s.voice));
   localStorage.setItem(STORAGE_KEYS.instructions, s.instructions);
   localStorage.setItem(STORAGE_KEYS.noiseGate, String(s.noiseGate));
@@ -276,6 +280,8 @@ const gateField = $("#gate-field");
 /** @type {HTMLSelectElement} */
 const inputTtsBackend = $("#tts-backend");
 /** @type {HTMLSelectElement} */
+const inputLlmModel = $("#llm-model");
+/** @type {HTMLSelectElement} */
 const inputVoice = $("#voice");
 /** @type {HTMLSelectElement} */
 const inputAudioInput = $("#audio-input");
@@ -307,6 +313,8 @@ const settingsForm = /** @type {HTMLFormElement} */ (settingsModal.querySelector
 /** @type {AppState} */
 let currentState = "idle";
 let settings = loadSettings();
+/** @type {{id: string, label?: string}[]} */
+let llmModels = [];
 
 // ── Connection target ────────────────────────────────────────────────────────
 // Three modes, decided by the deploy via /api/config:
@@ -472,6 +480,7 @@ function setCaption(text, kind = "") {
 
 function openSettings() {
   syncConnectionUi();
+  populateLlmOptions(settings.llmModel);
   inputTtsBackend.value = settings.ttsBackend;
   populateVoiceOptions(settings.ttsBackend, settings.voice);
   inputVoice.value = settings.voice;
@@ -480,6 +489,19 @@ function openSettings() {
   updateRestartAvailability();
   void refreshAudioDeviceLists();
   settingsModal.showModal();
+}
+
+/** @param {string} selected */
+function populateLlmOptions(selected = "") {
+  const available = llmModels.length ? llmModels : [{ id: DEFAULT_LLM_MODEL, label: "Gemma 4 E2B" }];
+  inputLlmModel.replaceChildren();
+  for (const model of available) {
+    const option = document.createElement("option");
+    option.value = model.id;
+    option.textContent = model.label || model.id;
+    inputLlmModel.append(option);
+  }
+  inputLlmModel.value = available.some((model) => model.id === selected) ? selected : available[0].id;
 }
 
 /** @param {string} backend @param {string} selected */
@@ -945,6 +967,9 @@ async function fetchConfig() {
       speakerMemoryTools = Array.isArray(json.speakerMemoryTools)
         ? json.speakerMemoryTools.filter((tool) => tool?.name?.startsWith("speaker_memory_"))
         : [];
+      llmModels = Array.isArray(json.llmModels)
+        ? json.llmModels.filter((model) => typeof model?.id === "string")
+        : [];
       lbMode = !!json.lb;
       // Lock to LB mode only when the deploy reports a load balancer.
       allowDirect = json.allowDirect ?? !lbMode;
@@ -1040,6 +1065,7 @@ function readSettingsFromForm() {
   return {
     directUrl: allowDirect && !pinnedUrl ? inputLbUrl.value.trim() : settings.directUrl,
     ttsBackend: inputTtsBackend.value || DEFAULT_TTS_BACKEND,
+    llmModel: inputLlmModel.value || DEFAULT_LLM_MODEL,
     voice: inputVoice.value || DEFAULT_VOICE,
     instructions: inputInstructions.value.trim() || DEFAULT_INSTRUCTIONS,
     noiseGate: readGateThreshold(),
@@ -1142,6 +1168,7 @@ settingsForm.addEventListener("submit", (event) => {
   // mic device changes need a Restart (new getUserMedia stream).
   if (client && LIVE_STATES.has(currentState)) {
     client.updateSession({
+      model: settings.llmModel,
       voice: encodeTtsSelection(settings.ttsBackend, settings.voice),
       instructions: settings.instructions,
     });
@@ -1463,6 +1490,7 @@ async function doStart(audioContext = null) {
   // a still-pending grant just means the snapshot tool isn't ready yet.
 
   const common = {
+    model: settings.llmModel,
     voice: encodeTtsSelection(settings.ttsBackend, settings.voice),
     instructions: settings.instructions,
     startupGreeting,
@@ -1515,7 +1543,24 @@ async function doStart(audioContext = null) {
   c.addEventListener("status", (e) => {
     const detail = /** @type {CustomEvent<{ status: string }>} */ (e).detail;
     onClientStatus(detail.status);
+    const phaseCaptions = {
+      "creating-session": "Preparing session…",
+      connecting: "Connecting to voice service…",
+      processing: "Waiting for the model…",
+      "ai-speaking": "Speaking…",
+    };
+    const caption = phaseCaptions[detail.status];
+    if (caption) setCaption(caption, "muted");
     if (detail.status === "ai-speaking") chat.onAssistantActivity();
+  });
+  c.addEventListener("phase", (e) => {
+    const d = /** @type {CustomEvent<{ phase: string; model?: string; ttftMs?: number }>} */ (e).detail;
+    if (currentState === "queued" || currentState === "your-turn") return;
+    if (d.phase === "model-processing") setCaption("Model is processing…", "muted");
+    if (d.phase === "first-token" && Number.isFinite(d.ttftMs)) {
+      setCaption(`First token in ${d.ttftMs} ms`, "muted");
+    }
+    if (d.phase === "audio-output") setCaption("Speaking…", "muted");
   });
   c.addEventListener("transcript", (e) => {
     const d = /** @type {CustomEvent<{ role: "user" | "assistant"; text: string; partial: boolean; itemId?: string; responseId?: string }>} */ (e).detail;
@@ -1535,8 +1580,25 @@ async function doStart(audioContext = null) {
   });
 
   c.addEventListener("response-finished", (e) => {
-    const detail = /** @type {CustomEvent<{ responseId: string; status: string; audible?: boolean; transcript?: string }>} */ (e).detail;
+    const detail = /** @type {CustomEvent<{ responseId: string; status: string; audible?: boolean; transcript?: string; metrics?: { ttftMs?: number | null; totalMs?: number; usage?: object | null } }>} */ (e).detail;
     chat.onResponseFinished(detail);
+    const metrics = detail.metrics;
+    const usage = metrics?.usage;
+    const usageText = usage && typeof usage === "object"
+      ? Object.entries(usage)
+        .filter(([key, value]) => /token/i.test(key) && typeof value === "number")
+        .map(([key, value]) => `${key.replaceAll("_", " ")}: ${value}`)
+        .join(" · ")
+      : "";
+    const timing = [
+      Number.isFinite(metrics?.ttftMs) ? `TTFT ${metrics.ttftMs} ms` : "",
+      Number.isFinite(metrics?.totalMs) ? `total ${metrics.totalMs} ms` : "",
+      usageText,
+    ].filter(Boolean).join(" · ");
+    if (timing && currentState !== "queued") {
+      circleSubcaption.textContent = timing;
+      circleSubcaption.hidden = false;
+    }
   });
   c.addEventListener("error", (e) => {
     const detail = /** @type {CustomEvent<{ error: unknown }>} */ (e).detail;

@@ -263,6 +263,13 @@
 
             <div class="field-row">
               <label class="field">
+                <span>LLM model</span>
+                <select id="llm-model">
+                  <option value="gemma-4-e2b" selected>Gemma 4 E2B</option>
+                </select>
+                <small>Applies to the next response. FreeToken keeps only one model hot at a time.</small>
+              </label>
+              <label class="field">
                 <span>TTS backend</span>
                 <select id="tts-backend">
                   <option value="silero" selected>Silero v5.5 RU</option>

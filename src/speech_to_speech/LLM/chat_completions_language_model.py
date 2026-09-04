@@ -367,7 +367,7 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         configured_max_retries = getattr(self, "max_retries", None)
         warmup_max_retries = configured_max_retries if configured_max_retries is not None else WARMUP_MAX_RETRIES
         self.client.with_options(max_retries=warmup_max_retries).chat.completions.create(
-            model=self.model_name,
+            model=self.active_model_name,
             messages=[
                 {"role": "system", "content": "You are a helpful assistant"},
                 {"role": "user", "content": "Hello"},
@@ -431,7 +431,7 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
     def _request(self, api_input: list[dict[str, Any]], optional_kwargs: dict[str, Any]) -> Any:
         return _request_chat_completions(
             client=self.client,
-            model_name=self.model_name,
+            model_name=self.active_model_name,
             messages=api_input,
             stream=self.stream,
             extra_body=self._extra_body,
@@ -439,13 +439,13 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
             optional_kwargs=optional_kwargs,
         )
 
-    def _perform_session_prefill(self, instructions: str, tools: Any, tool_choice: Any) -> None:
+    def _perform_session_prefill(self, instructions: str, tools: Any, tool_choice: Any, model_name: str) -> None:
         """Issue a bounded, non-streaming request to populate the provider KV prefix."""
         optional_kwargs = _build_chat_optional_kwargs(tools, tool_choice)
         optional_kwargs.update({"max_tokens": self.session_prefill_max_tokens, "temperature": 0})
         response = _request_chat_completions(
             client=self.client,
-            model_name=self.model_name,
+            model_name=model_name,
             messages=[
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": " "},
@@ -459,7 +459,7 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
             optional_kwargs=optional_kwargs,
         )
         self._close_response(response)
-        logger.info("LLM session prefill completed model=%s tools=%d", self.model_name, len(tools or []))
+        logger.info("LLM session prefill completed model=%s tools=%d", model_name, len(tools or []))
 
     def _iter_stream_events(self, api_response: Stream[ChatCompletionChunk]) -> Iterator[ProviderEvent]:
         yield from _iter_chat_stream_events(api_response)

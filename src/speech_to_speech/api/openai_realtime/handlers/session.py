@@ -48,7 +48,12 @@ class SessionHandler(RealtimeBaseHandler):
 
         model = getattr(s, "model", None)
         if model is not None:
-            logger.info(f"Session model set to: {model}")
+            if not isinstance(model, str) or model not in self._service.allowed_llm_models:
+                return self.make_error(
+                    message="The requested LLM model is not enabled for this server.",
+                    _type="invalid_model",
+                )
+            logger.info("Session model set to: %s", model)
 
         cfg = self._state(conn_id).runtime_config
         current = cfg.session

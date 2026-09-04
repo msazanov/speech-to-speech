@@ -303,6 +303,7 @@ class RealtimeService:
         speculative_turns: SpeculativeTurnTracker | None = None,
         default_instructions: str | None = None,
         required_instructions: str | None = None,
+        allowed_llm_models: set[str] | None = None,
     ) -> None:
         self.text_prompt_queue = text_prompt_queue
         self.should_listen = should_listen
@@ -310,6 +311,7 @@ class RealtimeService:
         self.speculative_turns = speculative_turns
         self._default_instructions = default_instructions
         self._required_instructions = required_instructions
+        self.allowed_llm_models = frozenset(allowed_llm_models or ())
         self._prefill_handler: Any | None = None
         self._conns: dict[str, ConnState] = {}
         self.total_usage = GlobalUsageMetrics()
@@ -423,6 +425,7 @@ class RealtimeService:
                     session.instructions,
                     session.tools,
                     session.tool_choice,
+                    model_name=session.model,
                 )
             # A prefetch captured the previous session configuration.
             self.response.discard_tool_followup_prefetch(conn_id)

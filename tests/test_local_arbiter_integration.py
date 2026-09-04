@@ -7,8 +7,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from openai.types.realtime.realtime_session_create_request import RealtimeSessionCreateRequest
+from openai.types.realtime.session_update_event import SessionUpdateEvent
 
 from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
+from speech_to_speech.api.openai_realtime.service import RealtimeService
 from speech_to_speech.LLM.chat import Chat, make_user_message
 from speech_to_speech.LLM.chat_completions_language_model import ChatCompletionsApiModelHandler
 from speech_to_speech.pipeline.messages import EndOfResponse, GenerateResponseRequest, LLMResponseChunk
@@ -117,12 +119,14 @@ def make_handler(endpoint: DelayedChatEndpoint, *, timeout_s: float) -> ChatComp
     )
 
 
-def generate_once(handler: ChatCompletionsApiModelHandler) -> list[object]:
+def generate_once(handler: ChatCompletionsApiModelHandler, *, model: str | None = None) -> list[object]:
     chat = Chat(4)
     chat.add_item(make_user_message("Ответь кратко"))
     runtime_config = RuntimeConfig(
         chat=chat,
-        session=RealtimeSessionCreateRequest(type="realtime", instructions="Отвечай по-русски."),
+        session=RealtimeSessionCreateRequest(
+            type="realtime", instructions="Отвечай по-русски.", model=model,
+        ),
     )
     request = GenerateResponseRequest(runtime_config=runtime_config, language_code="ru")
     return list(handler.process(request))
@@ -173,3 +177,31 @@ def test_adaptive_thinking_is_forwarded_without_forcing_reasoning() -> None:
 
     generation_request = endpoint.requests[-1]
     assert generation_request["chat_template_kwargs"] == {"thinking_mode": "adaptive"}
+
+
+def test_selected_runtime_model_is_sent_to_generation_but_not_warmup() -> None:
+    with DelayedChatEndpoint(generation_delay_s=0.0) as endpoint:
+        handler = make_handler(endpoint, timeout_s=0.5)
+        outputs = generate_once(handler, model="LFM2.5-2.6B")
+
+    assert [request["model"] for request in endpoint.requests] == ["gemma-4-e2b", "LFM2.5-2.6B"]
+    assert any(isinstance(output, EndOfResponse) and output.error is None for output in outputs)
+
+
+def test_realtime_service_accepts_only_configured_llm_models() -> None:
+    service = RealtimeService(allowed_llm_models={"gemma-4-e2b", "LFM2.5-2.6B"})
+    conn_id = service.register()
+
+    accepted = service.handle_session_update(
+        conn_id,
+        SessionUpdateEvent(type="session.update", session=RealtimeSessionCreateRequest(type="realtime", model="LFM2.5-2.6B")),
+    )
+    rejected = service.handle_session_update(
+        conn_id,
+        SessionUpdateEvent(type="session.update", session=RealtimeSessionCreateRequest(type="realtime", model="unknown")),
+    )
+
+    assert accepted is None
+    assert rejected is not None
+    assert rejected.error.type == "invalid_model"
+    assert service._state(conn_id).runtime_config.session.model == "LFM2.5-2.6B"

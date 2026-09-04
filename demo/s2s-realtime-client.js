@@ -33,6 +33,7 @@
  * @property {string} [callsUrl]
  * @property {RTCIceServer[]} [iceServers]
  * @property {string} voice
+ * @property {string} model
  * @property {string} instructions
  * @property {string} [startupGreeting]
  * @property {MediaStream} [micStream]
@@ -110,6 +111,8 @@ export class S2sRealtimeClient extends EventTarget {
     this._aiSpeaking = false;
     this._activeResponseId = "";
     this._responseRequested = false;
+    this._turnStartedAt = 0;
+    this._firstTokenAt = 0;
     this._audibleResponses = new Set();
     this._asstTranscriptByResp = new Map();
     this._asstFullByResp = new Map();
@@ -131,6 +134,16 @@ export class S2sRealtimeClient extends EventTarget {
     if (this._status === status) return;
     this._status = status;
     this.dispatchEvent(new CustomEvent("status", { detail: { status } }));
+  }
+
+  _markFirstToken() {
+    if (!this._turnStartedAt || this._firstTokenAt) return;
+    this._firstTokenAt = performance.now();
+    this.dispatchEvent(new CustomEvent("phase", { detail: {
+      phase: "first-token",
+      ttftMs: Math.round(this._firstTokenAt - this._turnStartedAt),
+      model: this.options.model,
+    } }));
   }
 
   async connect() {
@@ -212,6 +225,7 @@ export class S2sRealtimeClient extends EventTarget {
       type: "session.update",
       session: {
         type: "realtime",
+        model: this.options.model,
         instructions: this.options.instructions,
         tools: this._tools,
         tool_choice: this._tools.length ? "auto" : "none",
@@ -229,6 +243,7 @@ export class S2sRealtimeClient extends EventTarget {
 
   _sessionConfig() {
     return {
+      model: this.options.model,
       outputModalities: ["audio"],
       audio: {
         input: {
@@ -448,6 +463,11 @@ export class S2sRealtimeClient extends EventTarget {
       case "response.created":
         this._responseRequested = false;
         this._activeResponseId = event.response?.id ?? "";
+        this._turnStartedAt = performance.now();
+        this._firstTokenAt = 0;
+        this.dispatchEvent(new CustomEvent("phase", { detail: {
+          phase: "model-processing", model: this.options.model,
+        } }));
         if (this._status === "connected" || this._status === "user-speaking") this._setStatus("processing");
         break;
       case "response.content_part.added":
@@ -514,6 +534,7 @@ export class S2sRealtimeClient extends EventTarget {
         const responseId = typeof event.response_id === "string" ? event.response_id : "";
         const delta = typeof event.delta === "string" ? event.delta : "";
         if (delta) {
+          this._markFirstToken();
           this._asstTranscriptByResp.set(responseId, (this._asstTranscriptByResp.get(responseId) || "") + delta);
           this.dispatchEvent(new CustomEvent("transcript", { detail: {
             role: "assistant", text: this._asstDisplay(responseId), partial: true, responseId,
@@ -542,12 +563,22 @@ export class S2sRealtimeClient extends EventTarget {
         this._aiSpeaking = false;
         if (this._status === "ai-speaking" || this._status === "processing") this._setStatus("connected");
         const transcript = extractResponseTranscript(event.response) || this._asstDisplay(responseId) || "";
+        const finishedAt = performance.now();
+        const metrics = this._turnStartedAt ? {
+          ttftMs: this._firstTokenAt ? Math.round(this._firstTokenAt - this._turnStartedAt) : null,
+          totalMs: Math.round(finishedAt - this._turnStartedAt),
+          usage: event.response?.usage ?? null,
+        } : null;
         this.dispatchEvent(new CustomEvent("response-finished", { detail: {
           responseId,
           status: event.response?.status ?? "completed",
           audible: this._audibleResponses.has(responseId),
           transcript,
+          model: this.options.model,
+          metrics,
         } }));
+        this._turnStartedAt = 0;
+        this._firstTokenAt = 0;
         this._audibleResponses.delete(responseId);
         this._asstTranscriptByResp.delete(responseId);
         this._asstFullByResp.delete(responseId);
@@ -570,16 +601,26 @@ export class S2sRealtimeClient extends EventTarget {
 
   _markAudible() {
     if (this._status === "closed" || this._status === "error") return;
+    this._markFirstToken();
+    this.dispatchEvent(new CustomEvent("phase", { detail: {
+      phase: "audio-output", model: this.options.model,
+    } }));
     this._setStatus("ai-speaking");
   }
 
-  /** @param {{voice?: string, instructions?: string}} patch */
+  /** @param {{model?: string, voice?: string, instructions?: string}} patch */
   updateSession(patch) {
+    if (patch.model) this.options.model = patch.model;
     if (patch.voice) this.options.voice = patch.voice;
     if (patch.instructions) this.options.instructions = patch.instructions;
     if (!this._session) return;
     this._agent = this._buildAgent();
-    void this._session.updateAgent(this._agent);
+    void this._session.updateAgent(this._agent).then(() => {
+      this._transport?.sendEvent({
+        type: "session.update",
+        session: { type: "realtime", model: this.options.model },
+      });
+    });
   }
 
   /** @param {ToolDef[]} tools */

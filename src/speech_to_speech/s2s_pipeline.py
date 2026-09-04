@@ -587,6 +587,10 @@ def _build_pipeline_unit(
         speculative_turns=speculative_turns,
         default_instructions=default_instructions,
         required_instructions=default_instructions,
+        allowed_llm_models={
+            str(llm_selection.config["model_name"]),
+            *(item.strip() for item in os.environ.get("S2S_LLM_MODELS", "").split(",") if item.strip()),
+        },
     )
 
     if module_kwargs.enable_live_transcription:
