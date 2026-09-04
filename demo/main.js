@@ -313,7 +313,38 @@ const mgaHandle = /** @type {SVGCircleElement} */ (document.querySelector("#mga-
 const restartBtn = $("#restart-conversation");
 /** @type {HTMLElement} */
 const restartHint = $("#restart-hint");
+/** @type {HTMLElement} */
+const eventLog = $("#event-log");
+/** @type {HTMLButtonElement} */
+const eventLogClear = $("#event-log-clear");
 const settingsForm = /** @type {HTMLFormElement} */ (settingsModal.querySelector("form"));
+
+/** @param {string} kind @param {string} message @param {unknown} [details] */
+function appendEventLog(kind, message, details) {
+  const row = document.createElement("div");
+  row.className = `event-log-entry ${kind === "error" ? "error" : kind === "phase" ? "phase" : ""}`;
+  const time = new Date().toLocaleTimeString([], {
+    hour12: false, fractionalSecondDigits: 3,
+  });
+  let suffix = "";
+  if (details !== undefined) {
+    try { suffix = ` ${JSON.stringify(details)}`; } catch { suffix = " [details unavailable]"; }
+  }
+  for (const [className, value] of [
+    ["event-log-time", time],
+    ["event-log-kind", kind],
+    ["event-log-message", `${message}${suffix}`],
+  ]) {
+    const cell = document.createElement("span");
+    cell.className = className;
+    cell.textContent = value;
+    row.append(cell);
+  }
+  eventLog.append(row);
+  while (eventLog.children.length > 250) eventLog.firstElementChild?.remove();
+  eventLog.scrollTop = eventLog.scrollHeight;
+}
+eventLogClear.addEventListener("click", () => { eventLog.replaceChildren(); });
 
 /** @type {AppState} */
 let currentState = "idle";
@@ -1463,12 +1494,14 @@ function stopJoinCountdown() {
  * @param {AudioContext | null} [audioContext]
  */
 async function doStart(audioContext = null) {
+  appendEventLog("start", `starting conversation · model ${settings.llmModel}`);
   const transport = effectiveTransport();
   // Resolve the target before touching mic/audio so a misconfiguration (e.g.
   // direct mode with no URL) fails fast with a clear message. Over WebRTC the
   // browser never dials the s2s server itself — the offer goes to the
   // same-origin /api/calls proxy — so there is no target to resolve.
   const target = transport === "webrtc" ? null : connectionTarget();
+  appendEventLog("connect", transport === "webrtc" ? "using WebRTC via /api/calls" : `dialing ${target?.directUrl || "session proxy"}`);
   activeTransport = transport;
   // The radial gate arc (threshold handle around the mic button) is a WS
   // feature; over WebRTC only the mute button remains.
@@ -1531,6 +1564,7 @@ async function doStart(audioContext = null) {
   c.addEventListener("queue", (e) => {
     const { position, queueId } = /** @type {CustomEvent<{ position: number; queueId: string }>} */ (e).detail;
     if (queueId) queuedTicketId = queueId;
+    appendEventLog("queue", `waiting for model · position ${position}`, { queueId });
     onQueuePosition(position);
   });
 
@@ -1540,6 +1574,9 @@ async function doStart(audioContext = null) {
     // Track the granted session id already so that leaving (or letting the timer
     // lapse) refunds the budget the server reserved at claim, even before we dial.
     queuedTicketId = "";
+    appendEventLog("grant", "model lease granted; connecting", {
+      sessionId: info?.sessionId, model: settings.llmModel,
+    });
     if (info?.sessionId) {
       trackedSessionId = info.sessionId;
       trackedTier = info.tier || "anon";
@@ -1549,6 +1586,7 @@ async function doStart(audioContext = null) {
 
   c.addEventListener("status", (e) => {
     const detail = /** @type {CustomEvent<{ status: string }>} */ (e).detail;
+    appendEventLog("status", detail.status);
     onClientStatus(detail.status);
     const phaseCaptions = {
       "creating-session": "Preparing session…",
@@ -1562,6 +1600,7 @@ async function doStart(audioContext = null) {
   });
   c.addEventListener("phase", (e) => {
     const d = /** @type {CustomEvent<{ phase: string; model?: string; ttftMs?: number }>} */ (e).detail;
+    appendEventLog("phase", d.phase, d);
     if (currentState === "queued" || currentState === "your-turn") return;
     if (d.phase === "model-processing") setCaption("Model is processing…", "muted");
     if (d.phase === "first-token" && Number.isFinite(d.ttftMs)) {
@@ -1590,6 +1629,7 @@ async function doStart(audioContext = null) {
     const detail = /** @type {CustomEvent<{ responseId: string; status: string; audible?: boolean; transcript?: string; metrics?: { ttftMs?: number | null; totalMs?: number; usage?: object | null } }>} */ (e).detail;
     chat.onResponseFinished(detail);
     const metrics = detail.metrics;
+    appendEventLog("done", `response ${detail.status}`, metrics);
     const usage = metrics?.usage;
     const usageText = usage && typeof usage === "object"
       ? Object.entries(usage)
@@ -1609,6 +1649,7 @@ async function doStart(audioContext = null) {
   });
   c.addEventListener("error", (e) => {
     const detail = /** @type {CustomEvent<{ error: unknown }>} */ (e).detail;
+    appendEventLog("error", detail.error instanceof Error ? detail.error.message : String(detail.error));
     void onFatalError(detail.error);
   });
   c.addEventListener("server-error", (e) => {
@@ -1616,10 +1657,12 @@ async function doStart(audioContext = null) {
     // socket and the conversation alive (the model can recover on its own).
     const detail = /** @type {CustomEvent<{ error: unknown }>} */ (e).detail;
     const msg = detail.error instanceof Error ? detail.error.message : String(detail.error);
+    appendEventLog("error", msg);
     console.warn("[main] server error (non-fatal):", msg);
   });
   c.addEventListener("session", (e) => {
     const info = /** @type {CustomEvent<{ info: import("./s2s-realtime-client.js").SessionInfo }>} */ (e).detail.info;
+    appendEventLog("session", "realtime session created", { sessionId: info.sessionId });
     console.log("[ws] session created:", info.sessionId);
     // A slot was granted — we're out of the queue; drop the ticket reference so
     // teardown doesn't try to leave a line we already left.

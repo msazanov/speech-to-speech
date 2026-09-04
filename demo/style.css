@@ -1321,6 +1321,62 @@ body.booting *::after {
 
 /* ─── Footer ──────────────────────────────────────────────────────────── */
 
+.event-log-panel {
+  width: min(760px, calc(100% - 32px));
+  margin: 8px auto 0;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface, #111) 88%, transparent);
+  overflow: hidden;
+  text-align: left;
+}
+.event-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  color: var(--text-faint);
+  font: 10px var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.event-log-clear {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  cursor: pointer;
+  text-transform: uppercase;
+}
+.event-log-clear:hover { color: var(--text); }
+.event-log {
+  max-height: 170px;
+  overflow-y: auto;
+  padding: 0 10px 8px;
+  font: 11px/1.55 var(--font-mono);
+  scrollbar-width: thin;
+}
+.event-log:empty::before {
+  display: block;
+  padding: 2px 0 3px;
+  color: var(--text-faint);
+  content: "No runtime events yet";
+}
+.event-log-entry {
+  display: grid;
+  grid-template-columns: 66px 92px 1fr;
+  gap: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.event-log-time, .event-log-kind { color: var(--text-faint); }
+.event-log-kind { color: var(--accent, #9fc); }
+.event-log-message { color: var(--text-dim); }
+.event-log-entry.error .event-log-kind,
+.event-log-entry.error .event-log-message { color: var(--error); }
+.event-log-entry.phase .event-log-kind { color: var(--glow, #c9f); }
+
 .footer {
   padding: 12px 28px 18px;
   font-size: 11px;
