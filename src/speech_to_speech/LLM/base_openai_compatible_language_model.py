@@ -73,6 +73,9 @@ PREFETCH_PROVIDER_WORKER_LIMIT = 1
 PREFETCH_STREAM_QUEUE_MAXSIZE = 16
 PREFETCH_WORKER_ACQUIRE_TIMEOUT_S = 0.05
 PROVIDER_FAILURE_FALLBACK = "I'm having trouble responding right now. Please try again."
+# A provider may emit a tiny reasoning preamble even for a trivial answer. Do
+# not turn that first token into audible filler; acknowledge only sustained work.
+THINKING_ACK_MIN_REASONING_CHARS = 240
 
 
 # ── Normalised provider events ────────────────────────────────────────────────
@@ -855,7 +858,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 state.reasoning_chars += len(event.text)
                 if state.reasoning_started_at is None:
                     state.reasoning_started_at = perf_counter()
-                if turn.wants_audio and event.text.strip() and not state.thinking_ack_emitted:
+                    logger.info("LLM reasoning started model=%s turn=%s", self.model_name, turn.turn_id)
+                if (
+                    turn.wants_audio
+                    and state.reasoning_chars >= THINKING_ACK_MIN_REASONING_CHARS
+                    and not state.thinking_ack_emitted
+                ):
                     if printable_text.strip():
                         sentence_batch.append(remove_markdown(printable_text.strip()))
                         printable_text = ""
@@ -864,7 +872,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                         sentence_batch = []
                     state.thinking_ack_emitted = True
                     state.output_emitted = True
-                    logger.info("LLM reasoning started model=%s turn=%s", self.model_name, turn.turn_id)
+                    logger.info(
+                        "LLM reasoning acknowledgement emitted model=%s turn=%s reasoning_chars=%d",
+                        self.model_name,
+                        turn.turn_id,
+                        state.reasoning_chars,
+                    )
                     yield self._chunk(turn, text=self._thinking_ack(turn.language_code))
             elif isinstance(event, ToolCall):
                 # Flush any pending spoken text before emitting the tool call.
@@ -962,10 +975,20 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 state.reasoning_chars += len(event.text)
                 if state.reasoning_started_at is None:
                     state.reasoning_started_at = perf_counter()
-                if turn.wants_audio and event.text.strip() and not state.thinking_ack_emitted:
+                    logger.info("LLM reasoning started model=%s turn=%s", self.model_name, turn.turn_id)
+                if (
+                    turn.wants_audio
+                    and state.reasoning_chars >= THINKING_ACK_MIN_REASONING_CHARS
+                    and not state.thinking_ack_emitted
+                ):
                     state.thinking_ack_emitted = True
                     state.output_emitted = True
-                    logger.info("LLM reasoning started model=%s turn=%s", self.model_name, turn.turn_id)
+                    logger.info(
+                        "LLM reasoning acknowledgement emitted model=%s turn=%s reasoning_chars=%d",
+                        self.model_name,
+                        turn.turn_id,
+                        state.reasoning_chars,
+                    )
                     yield self._chunk(turn, text=self._thinking_ack(turn.language_code))
             elif isinstance(event, ToolCall):
                 yield from self._record_tool_call(state, turn, event.item)
