@@ -154,7 +154,7 @@
     <!-- Ephemeral chat bubbles anchored to the top-right -->
     <div id="bubble-stack" class="bubble-stack" aria-live="polite" aria-atomic="false"></div>
 
-    <!-- Webcam self-view, shown bottom-left while the camera tool is enabled -->
+    <!-- Webcam self-view, currently disabled with the video backend. -->
     <div id="cam-pip" class="cam-pip" aria-hidden="true">
       <video id="cam-video" class="cam-video" autoplay playsinline muted></video>
       <span class="cam-flash" aria-hidden="true"></span>
@@ -385,17 +385,17 @@
             <small id="tool-web-hint"></small>
           </label>
 
-          <div class="tool-row tool-row-sep" id="tool-cam-row">
+          <div class="tool-row tool-row-sep disabled" id="tool-cam-row">
             <div class="tool-info">
               <span class="tool-name">Camera</span>
               <span class="tool-desc">Let the assistant see through your webcam.</span>
             </div>
             <label class="switch">
-              <input id="tool-cam" type="checkbox" />
+              <input id="tool-cam" type="checkbox" disabled />
               <span class="switch-track" aria-hidden="true"></span>
             </label>
           </div>
-          <small id="tool-cam-hint" class="tool-hint">A live preview shows bottom-left while the camera is on.</small>
+          <small id="tool-cam-hint" class="tool-hint">Video backend is temporarily disabled.</small>
         </div>
       </div>
     </dialog>

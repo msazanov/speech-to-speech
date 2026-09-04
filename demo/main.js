@@ -61,6 +61,7 @@ const STORAGE_KEYS = {
 const GATE_OFF_DB = -66; // slider minimum = off / bottom of the meter axis
 const GATE_MAX_DB = -3; // slider maximum = most aggressive / top of the meter axis
 const GATE_DEFAULT_DB = -50; // first-run default: a gentle gate, enabled
+const VIDEO_BACKEND_ENABLED = false;
 
 /** @param {number} thresholdDb @returns {import("./s2s-realtime-client.js").NoiseGate} */
 function gateParams(thresholdDb) {
@@ -169,10 +170,10 @@ function loadTools() {
     // silently resume the webcam; an explicit saved `false` is respected.
     return {
       web_search: raw.web_search ?? true,
-      camera_snapshot: raw.camera_snapshot ?? true,
+      camera_snapshot: VIDEO_BACKEND_ENABLED && (raw.camera_snapshot ?? false),
     };
   } catch {
-    return { web_search: true, camera_snapshot: true };
+    return { web_search: true, camera_snapshot: false };
   }
 }
 
@@ -368,7 +369,7 @@ function searchAvailable() {
 function activeToolDefs() {
   const defs = [];
   if (toolsEnabled.web_search && searchAvailable()) defs.push(TOOL_DEFS.web_search);
-  if (toolsEnabled.camera_snapshot) defs.push(TOOL_DEFS.camera_snapshot);
+  if (VIDEO_BACKEND_ENABLED && toolsEnabled.camera_snapshot) defs.push(TOOL_DEFS.camera_snapshot);
   defs.push(...speakerMemoryTools);
   return defs;
 }
@@ -669,7 +670,11 @@ function syncToolsUi() {
   toolWebSwitch.checked = toolsEnabled.web_search && avail;
   toolWebSwitch.disabled = !avail;
   toolWebRow.classList.toggle("disabled", !avail);
-  toolCamSwitch.checked = toolsEnabled.camera_snapshot;
+  toolCamSwitch.checked = false;
+  toolCamSwitch.disabled = true;
+  const toolCamRow = $("#tool-cam-row");
+  toolCamRow.classList.add("disabled");
+  toolCamHint.textContent = "Video backend is temporarily disabled.";
 
   if (serverSearchKey) {
     // Key lives server-side: show it as configured, never expose it.
@@ -704,6 +709,7 @@ toolWebSwitch.addEventListener("change", () => {
 });
 
 toolCamSwitch.addEventListener("change", async () => {
+  if (!VIDEO_BACKEND_ENABLED) return;
   if (toolCamSwitch.checked) {
     try {
       // Flipping the switch always re-requests the camera, so a permission that
@@ -1486,9 +1492,6 @@ async function doStart(audioContext = null) {
     throw err;
   }
 
-  // The webcam is started on arrival (autoStartCamera), so nothing to do here;
-  // a still-pending grant just means the snapshot tool isn't ready yet.
-
   const common = {
     model: settings.llmModel,
     voice: encodeTtsSelection(settings.ttsBackend, settings.voice),
@@ -1798,10 +1801,12 @@ setState("idle");
 chat.renderEmptyState();
 initGateArc();
 void fetchConfig();
-// Start the webcam as soon as the user lands (camera tool defaults on), and
-// react to later permission changes (re-grant after a denial re-enables it).
-void autoStartCamera();
-void watchCameraPermission();
+// Video is intentionally disabled for now; do not request camera permission or
+// start a webcam stream until the backend is ready again.
+if (VIDEO_BACKEND_ENABLED) {
+  void autoStartCamera();
+  void watchCameraPermission();
+}
 
 // Reconcile a live session if the tab is closed/hidden mid-call (no teardown).
 window.addEventListener("pagehide", () => { endTrackedSession(); endQueueTicket(); });

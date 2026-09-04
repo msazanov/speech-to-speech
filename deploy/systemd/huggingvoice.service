@@ -11,7 +11,7 @@ Environment=HF_HUB_OFFLINE=1
 Environment=TRANSFORMERS_OFFLINE=1
 # Comma-separated FreeToken model ids exposed in the browser selector. The
 # arbiter still keeps only one selected model resident at a time.
-Environment=S2S_LLM_MODELS=gemma-4-e2b,LFM2.5-2.6B
+Environment=S2S_LLM_MODELS=gemma-4-e2b
 ExecStartPre=/home/random/dev/huggingvoice/scripts/wait-for-llm.sh http://127.0.0.1:1919/v1 gemma-4-e2b
 ExecStart=/home/random/dev/huggingvoice/scripts/run-omniroute-ru-en.sh
 Restart=on-failure
