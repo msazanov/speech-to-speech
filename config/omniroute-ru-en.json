@@ -13,6 +13,8 @@
   "enable_live_transcription": true,
   "live_transcription_update_interval": 0.25,
   "min_silence_ms": 500,
+  "min_speech_ms": 192,
+  "min_speech_continuation_ms": 128,
   "speaker_memory_enabled": true,
   "speaker_memory_model_path": "/home/random/dev/huggingvoice/models/speaker-memory/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx",
   "speaker_memory_database_path": "/home/random/.local/share/huggingvoice/speaker-memory.sqlite3",
