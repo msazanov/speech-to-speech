@@ -346,6 +346,57 @@ function appendEventLog(kind, message, details) {
 }
 eventLogClear.addEventListener("click", () => { eventLog.replaceChildren(); });
 
+let freetokenLogCursor = Math.max(0, Date.now() / 1000 - 10);
+let freetokenLogTimer = 0;
+const freetokenLogSeen = new Set();
+let freetokenEngineCursor = 0;
+let freetokenEngineTimer = 0;
+
+async function pollFreetokenLogs() {
+  try {
+    const response = await fetch(`api/freetoken/logs?since=${freetokenLogCursor}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) return;
+    const payload = await response.json();
+    freetokenLogCursor = Number(payload.cursor) || freetokenLogCursor;
+    if (!payload.available) return;
+    for (const line of Array.isArray(payload.lines) ? payload.lines : []) {
+      if (typeof line !== "string" || !line || freetokenLogSeen.has(line)) continue;
+      freetokenLogSeen.add(line);
+      if (freetokenLogSeen.size > 500) freetokenLogSeen.delete(freetokenLogSeen.values().next().value);
+      appendEventLog("freetoken", line);
+    }
+  } catch {
+    // Static file mode and hosted deployments may not expose local journal logs.
+  }
+  if (!freetokenLogTimer) freetokenLogTimer = window.setTimeout(() => {
+    freetokenLogTimer = 0;
+    void pollFreetokenLogs();
+  }, 1500);
+}
+
+async function pollFreetokenEngineLogs() {
+  try {
+    const response = await fetch(`api/freetoken/engine-logs?since=${freetokenEngineCursor}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) return;
+    const payload = await response.json();
+    freetokenEngineCursor = Number(payload.cursor) || freetokenEngineCursor;
+    for (const event of Array.isArray(payload.events) ? payload.events : []) {
+      if (!event || typeof event.text !== "string") continue;
+      appendEventLog("engine", event.text, event.kind === "line" ? undefined : event.kind);
+    }
+  } catch {
+    // The daemon log ring is local-only and may be unavailable in hosted mode.
+  }
+  if (!freetokenEngineTimer) freetokenEngineTimer = window.setTimeout(() => {
+    freetokenEngineTimer = 0;
+    void pollFreetokenEngineLogs();
+  }, 1000);
+}
+
 /** @type {AppState} */
 let currentState = "idle";
 let settings = loadSettings();
@@ -1848,6 +1899,8 @@ setState("idle");
 chat.renderEmptyState();
 initGateArc();
 void fetchConfig();
+void pollFreetokenLogs();
+void pollFreetokenEngineLogs();
 // Video is intentionally disabled for now; do not request camera permission or
 // start a webcam stream until the backend is ready again.
 if (VIDEO_BACKEND_ENABLED) {

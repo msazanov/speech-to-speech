@@ -45,6 +45,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from urllib.parse import urlsplit, urlunsplit
 
 import auth
@@ -75,6 +76,7 @@ LOAD_BALANCER_URL = os.environ.get("LOAD_BALANCER_URL", "").strip()
 # the LB address it is NOT a secret — /api/config sends it to the client, which
 # shows it read-only in Settings.
 SPEECH_TO_SPEECH_URL = os.environ.get("SPEECH_TO_SPEECH_URL", "").strip()
+FREETOKEN_DAEMON_URL = os.environ.get("FREETOKEN_DAEMON_URL", "http://127.0.0.1:1900").strip()
 if SPEECH_TO_SPEECH_URL:
     LOAD_BALANCER_URL = ""
 # HF injects SPACE_ID ("owner/space") into every Space runtime; it's absent
@@ -235,6 +237,58 @@ def config():
         "speakerMemoryTools": SPEAKER_MEMORY_TOOLS if SPEECH_TO_SPEECH_URL else [],
         "auth": AUTH_ENABLED,
     }
+
+
+@app.get("/api/freetoken/logs")
+async def freetoken_logs(since: float | None = None):
+    """Return a small read-only tail of the local FreeToken systemd journal.
+
+    This is intentionally best-effort: the local workstation has the arbiter and
+    model backends as user units, while hosted deployments may not have journalctl.
+    The browser uses the returned cursor to request only new lines.
+    """
+    now = time.time()
+    start = now - 30.0 if since is None else max(0.0, min(float(since), now))
+    units = (
+        "freetoken-arbiter.service",
+        "freetoken-daemon.service",
+        "freetoken-ornith.service",
+        "llama-gemma-cpu.service",
+        "llama-lfm25.service",
+    )
+    command = ["journalctl", "--user"]
+    for unit in units:
+        command.extend(("-u", unit))
+    command.extend(("--since", f"@{start:.6f}", "--no-pager", "-o", "short-precise", "-n", "150"))
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=2.0)
+    except (OSError, asyncio.TimeoutError):
+        return {"available": False, "cursor": now, "lines": []}
+    lines = [
+        line for line in stdout.decode("utf-8", "replace").splitlines()
+        if line.strip() != "-- No entries --"
+    ]
+    return {"available": process.returncode == 0, "cursor": now, "lines": lines}
+
+
+@app.get("/api/freetoken/engine-logs")
+async def freetoken_engine_logs(since: int = 0):
+    """Proxy the daemon's captured model-process log ring for the local UI."""
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as http:
+            response = await http.get(
+                f"{FREETOKEN_DAEMON_URL.rstrip('/')}/engine/logs/tail",
+                params={"since": max(0, since)},
+            )
+            response.raise_for_status()
+            return {"available": True, **response.json()}
+    except (httpx.HTTPError, ValueError, OSError):
+        return {"available": False, "cursor": max(0, since), "events": []}
 
 
 @app.get("/api/me")
