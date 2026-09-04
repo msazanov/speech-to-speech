@@ -157,6 +157,9 @@ class _GenState(BaseModel):
     output_tokens: int = 0
     output_emitted: bool = False
     thinking_ack_emitted: bool = False
+    reasoning_chars: int = 0
+    reasoning_started_at: float | None = None
+    reasoning_completed: bool = False
 
 
 class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
@@ -849,6 +852,9 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     RealtimeConversationItemAssistantMessage(type="message", role="assistant", content=event.content)
                 )
             elif isinstance(event, ReasoningDelta):
+                state.reasoning_chars += len(event.text)
+                if state.reasoning_started_at is None:
+                    state.reasoning_started_at = perf_counter()
                 if turn.wants_audio and event.text.strip() and not state.thinking_ack_emitted:
                     if printable_text.strip():
                         sentence_batch.append(remove_markdown(printable_text.strip()))
@@ -874,6 +880,15 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     sentence_batch = []
                 yield from self._record_tool_call(state, turn, event.item)
             elif isinstance(event, TextDelta):
+                if state.reasoning_started_at is not None and not state.reasoning_completed:
+                    state.reasoning_completed = True
+                    logger.info(
+                        "LLM reasoning completed model=%s turn=%s reasoning_chars=%d reasoning_ms=%.1f",
+                        self.model_name,
+                        turn.turn_id,
+                        state.reasoning_chars,
+                        (perf_counter() - state.reasoning_started_at) * 1000,
+                    )
                 if not turn.wants_audio:
                     # Text-only: forward verbatim. Keep every character (no
                     # remove_unspeechable, which strips TTS-unfriendly symbols) and
@@ -944,6 +959,9 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     RealtimeConversationItemAssistantMessage(type="message", role="assistant", content=event.content)
                 )
             elif isinstance(event, ReasoningDelta):
+                state.reasoning_chars += len(event.text)
+                if state.reasoning_started_at is None:
+                    state.reasoning_started_at = perf_counter()
                 if turn.wants_audio and event.text.strip() and not state.thinking_ack_emitted:
                     state.thinking_ack_emitted = True
                     state.output_emitted = True
@@ -952,6 +970,14 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             elif isinstance(event, ToolCall):
                 yield from self._record_tool_call(state, turn, event.item)
             elif isinstance(event, TextDelta):
+                if state.reasoning_started_at is not None and not state.reasoning_completed:
+                    state.reasoning_completed = True
+                    logger.info(
+                        "LLM reasoning completed model=%s turn=%s reasoning_chars=%d",
+                        self.model_name,
+                        turn.turn_id,
+                        state.reasoning_chars,
+                    )
                 # Text-only keeps every character verbatim; audio strips markdown
                 # and TTS-unfriendly symbols. Not per-delta here: each TextDelta
                 # in the non-streaming path already carries the full response.
