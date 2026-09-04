@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import time
 
+from .enrollment import ENROLL_SAMPLE_TARGET, ENROLL_SESSION_TTL_S, EnrollmentSession, sample_phrases
 from .models import PersonalFact, PersonCandidate, SpeakerAttribution, SpeakerState, compact_voice_id
 from .store import SpeakerMemoryStore
 
@@ -42,6 +44,45 @@ class SpeakerMemoryService:
         self.store = store
         self.identity_threshold = identity_threshold
         self.identity_margin = identity_margin
+        self._enrollments: dict[str, EnrollmentSession] = {}
+
+    def start_enrollment(self, speaker_ref: str, *, conversation_id: str) -> EnrollmentSession:
+        """Open (or resume) guided calibration for the referenced voice."""
+
+        reference = self.store.resolve_reference(speaker_ref, conversation_id=conversation_id)
+        canonical_voice_id = self.store.resolve_voice_id(reference.voice_id)
+        existing = self._enrollments.get(conversation_id)
+        if existing is not None and existing.voice_id == canonical_voice_id and existing.active:
+            return existing
+        session = EnrollmentSession(
+            voice_id=canonical_voice_id,
+            phrases=sample_phrases(ENROLL_SAMPLE_TARGET),
+            remaining=ENROLL_SAMPLE_TARGET,
+            expires_at=time.monotonic() + ENROLL_SESSION_TTL_S,
+        )
+        self._enrollments[conversation_id] = session
+        return session
+
+    def active_enrollment(self, conversation_id: str) -> EnrollmentSession | None:
+        session = self._enrollments.get(conversation_id)
+        if session is None:
+            return None
+        if not session.active:
+            self._enrollments.pop(conversation_id, None)
+            return None
+        return session
+
+    def note_enrollment_sample(self, conversation_id: str) -> int:
+        """Consume one calibration sample; return how many are still needed."""
+
+        session = self.active_enrollment(conversation_id)
+        if session is None:
+            return 0
+        session.remaining -= 1
+        return session.remaining
+
+    def clear_enrollment(self, conversation_id: str) -> None:
+        self._enrollments.pop(conversation_id, None)
 
     def inspect(self, speaker_ref: str, *, conversation_id: str) -> SpeakerAttribution:
         reference = self.store.resolve_reference(speaker_ref, conversation_id=conversation_id)

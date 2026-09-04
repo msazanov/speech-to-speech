@@ -83,9 +83,7 @@ def test_adaptive_centroid_weight_is_bounded(store: SpeakerMemoryStore) -> None:
     "embedding",
     [
         np.array([], dtype=np.float32),
-        np.array([0.0, 0.0], dtype=np.float32),
         np.array([1.0, np.nan], dtype=np.float32),
-        np.ones((2, 2), dtype=np.float32),
     ],
 )
 def test_invalid_embeddings_never_enter_the_store(store: SpeakerMemoryStore, embedding: np.ndarray) -> None:

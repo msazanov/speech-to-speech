@@ -15,6 +15,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     subcommands = parser.add_subparsers(dest="command", required=True)
     unblock = subcommands.add_parser("unblock", help="Recover a falsely blocked voice ID.")
     unblock.add_argument("voice_id")
+    detach = subcommands.add_parser("detach", help="Detach a voice alias from its canonical cluster.")
+    detach.add_argument("voice_id")
     arguments = parser.parse_args(argv)
 
     store = SpeakerMemoryStore(arguments.database)
@@ -22,6 +24,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command == "unblock":
             store.set_voice_blocked(arguments.voice_id, blocked=False)
             print(f"Unblocked voice={arguments.voice_id}")
+            return 0
+        if arguments.command == "detach":
+            detached = store.detach_voice_alias(arguments.voice_id)
+            if detached:
+                print(f"Detached voice={arguments.voice_id}")
+            else:
+                print(f"Voice={arguments.voice_id} has no alias to detach")
             return 0
     finally:
         store.close()

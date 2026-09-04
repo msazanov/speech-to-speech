@@ -233,6 +233,60 @@ class SpeakerTracker:
             speaker_ms=(time.perf_counter() - started) * 1000,
         )
 
+    def enroll(
+        self,
+        embedding: np.ndarray,
+        *,
+        voice_id: str,
+        quality: float,
+        turn_id: str,
+        turn_revision: int,
+        conversation_id: str,
+    ) -> SpeakerAttribution:
+        """Fold a guided calibration sample into a known voice, bypassing thresholds.
+
+        The assistant explicitly asked this speaker to repeat a phrase, so the
+        sample is trusted: it updates the centroid at full weight and lands in
+        the bounded prototype bank even when it would not survive the normal
+        candidate/match thresholds.
+        """
+
+        started = time.perf_counter()
+        vector = normalize_embedding(embedding)
+        canonical_id = self.store.resolve_voice_id(voice_id)
+        if self.store.is_voice_blocked(canonical_id):
+            return SpeakerAttribution(
+                voice_id=canonical_id,
+                state=SpeakerState.BLACKLISTED,
+                recommendation="do_not_learn",
+                speaker_ms=(time.perf_counter() - started) * 1000,
+            )
+        trusted_quality = float(min(max(quality, 1e-3), 1.0))
+        voice = self.store.update_voice_cluster(canonical_id, vector, quality=trusted_quality)
+        observation = self.store.create_observation(
+            voice.id,
+            turn_id=turn_id,
+            turn_revision=turn_revision,
+            conversation_id=conversation_id,
+            quality=quality,
+        )
+        reference = self.store.issue_reference(
+            observation.id,
+            conversation_id=conversation_id,
+            ttl_s=self.reference_ttl_s,
+        )
+        state, candidate = self._identity_state(voice.id)
+        if candidate is not None:
+            self.store.bind_reference_candidate(reference, candidate.person_id)
+        return SpeakerAttribution(
+            voice_id=voice.id,
+            speaker_ref=reference,
+            state=state,
+            candidate=candidate,
+            recommendation="clarify" if state is SpeakerState.CONFLICT else "none",
+            speaker_ms=(time.perf_counter() - started) * 1000,
+        )
+
     def _top_candidate(self, voice_id: str) -> PersonCandidate | None:
         candidates = self.store.resolve_person_candidates(voice_id)
         return candidates[0] if candidates else None

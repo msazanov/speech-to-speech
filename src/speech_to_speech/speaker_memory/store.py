@@ -49,6 +49,7 @@ class SpeakerMemoryStore:
     _MAX_CENTROID_WEIGHT = 20.0
     _MAX_EVIDENCE_SCORE = 10.0
     _MAX_VOICE_PROTOTYPES = 8
+    _PERSON_MERGE_MIN_SIMILARITY = 0.55
 
     def __init__(
         self,
@@ -494,6 +495,12 @@ class SpeakerMemoryStore:
         if not candidates:
             return current_id
         target = max(candidates, key=lambda cluster: (cluster.sample_count, cluster.quality_weight, -cluster.created_at))
+        # Identity evidence binds without merging.  An acoustic merge is only
+        # safe when the voices actually sound alike; otherwise a misheard name
+        # would fold one speaker's clusters into another person's canonical
+        # voice and every future utterance would resolve to the wrong person.
+        if self.voice_similarity(current_id, target.id) < self._PERSON_MERGE_MIN_SIMILARITY:
+            return current_id
         return self.merge_voice_clusters(current_id, target.id, reason=reason)
 
     def set_voice_blocked(self, voice_id: str, *, blocked: bool, reason: str | None = None) -> None:

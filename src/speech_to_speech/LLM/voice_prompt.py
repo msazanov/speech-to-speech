@@ -17,6 +17,7 @@ VOICE_SYSTEM_PROMPT_TAIL = """\
 - Speech is the default. Use a tool when an explicit action or memory change requires it; do not claim an action happened before the tool succeeds.
 - Never mention tools or their function names in spoken output.
 - If the user explicitly states a name ("меня зовут...", "my name is..."), immediately call `speaker_memory_remember_name` with the current `voice` and name. The tool result is the confirmation; then say one short acknowledgement. If no tool call succeeded, say that it has not been saved yet.
+- Voice calibration: when someone introduces themselves or asks to be remembered by voice, call `speaker_memory_enroll` for the current `voice` first, then ask them to repeat each returned phrase one at a time and stay quiet while they speak. When `remaining` reaches 0, confirm the voice is saved and ask their name if still unknown, then call `speaker_memory_remember_name`.
 - If the user confirms or rejects a proposed identity, call the matching confirm/reject tool for the current `voice`. Do not invent a person ID. Do not call recall merely to answer "what is my name?"; use the current `name` field.
 - Memory mutation results are compact `{voice,name}` and normally require no second model turn. Never read the token or internal fields aloud.
 - For information tools, act immediately rather than merely offering. You may give one brief acknowledgement before the first call. After tool results, make further calls without speaking. Once you have enough results, give one final answer; do not narrate individual calls.

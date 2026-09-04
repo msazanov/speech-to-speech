@@ -46,6 +46,17 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "name": "speaker_memory_enroll",
+        "description": "Start guided voice calibration for the current speaker. Returns phrases to ask them to repeat one by one; each repetition strengthens this voice's memory.",
+        "parameters": {
+            "type": "object",
+            "properties": {"voice": _VOICE_PROPERTY},
+            "required": ["voice"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
         "name": "speaker_memory_confirm",
         "description": "Confirm the current voice candidate.",
         "parameters": {
@@ -207,6 +218,19 @@ def _execute(
                 conversation_id=conversation_id,
             )
             create_response = False
+        elif name == "speaker_memory_enroll":
+            session = service.start_enrollment(speaker_ref, conversation_id=conversation_id)
+            attribution = service.inspect(speaker_ref, conversation_id=conversation_id)
+            return ToolResult(
+                output={
+                    **_compact_attribution(attribution),
+                    "enroll": {
+                        "phrases": list(session.phrases),
+                        "remaining": session.remaining,
+                    },
+                },
+                create_response=True,
+            )
         elif name == "speaker_memory_confirm":
             candidate = service.inspect(speaker_ref, conversation_id=conversation_id).candidate
             if candidate is None:

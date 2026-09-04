@@ -6,6 +6,7 @@ import json
 import logging
 from collections.abc import Iterator
 from time import perf_counter
+from typing import Any
 from uuid import uuid4
 
 import numpy as np
@@ -91,13 +92,32 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
         try:
             started = perf_counter()
             embedding = self.extractor.extract(audio, self.sample_rate)
-            attribution = self.tracker.observe(
-                embedding,
-                quality=quality,
-                turn_id=vad_audio.turn_id or f"turn_{uuid4().hex}",
-                turn_revision=vad_audio.turn_revision or 0,
-                conversation_id=self.conversation_id,
-            )
+            turn_id = vad_audio.turn_id or f"turn_{uuid4().hex}"
+            turn_revision = vad_audio.turn_revision or 0
+            enrollment = self._active_enrollment()
+            if enrollment is not None:
+                attribution = self.tracker.enroll(
+                    embedding,
+                    voice_id=enrollment.voice_id,
+                    quality=quality,
+                    turn_id=turn_id,
+                    turn_revision=turn_revision,
+                    conversation_id=self.conversation_id,
+                )
+                remaining = self.service.note_enrollment_sample(self.conversation_id)
+                logger.info(
+                    "Speaker enrollment sample voice=%s remaining=%d",
+                    compact_voice_id(attribution.voice_id),
+                    remaining,
+                )
+            else:
+                attribution = self.tracker.observe(
+                    embedding,
+                    quality=quality,
+                    turn_id=turn_id,
+                    turn_revision=turn_revision,
+                    conversation_id=self.conversation_id,
+                )
             attribution = attribution.model_copy(update={"speaker_ms": (perf_counter() - started) * 1000})
             logger.info(
                 "Speaker attributed voice=%s state=%s person_id=%s person=%s margin=%s speaker_ms=%.1f",
@@ -147,10 +167,23 @@ class SpeakerMemoryHandler(BaseHandler[VADAudio, VADAudio]):
         return max(0.0, signal_score * (1.0 - clipping_fraction))
 
     def on_session_end(self) -> None:
+        service = getattr(self, "service", None)
+        if service is not None:
+            service.clear_enrollment(self.conversation_id)
         store = getattr(self.tracker, "store", None)
         if store is not None:
             store.prune_expired()
         self.conversation_id = self._new_conversation_id()
+
+    def _active_enrollment(self) -> Any | None:
+        service = getattr(self, "service", None)
+        if service is None:
+            return None
+        try:
+            return service.active_enrollment(self.conversation_id)
+        except Exception as exc:
+            logger.warning("Speaker enrollment lookup failed after %s", type(exc).__name__)
+            return None
 
     def cleanup(self) -> None:
         if self.close_store_on_cleanup:
