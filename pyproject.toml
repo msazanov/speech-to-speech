@@ -94,7 +94,12 @@ pocket = [
     "pocket-tts>=2.0.0",
 ]
 speaker-memory = [
-    "sherpa-onnx>=1.13.6,<2",
+    # 1.13+ is built against a newer ONNX Runtime ABI than the CPU runtime
+    # supported by this project (and fails to load speaker embeddings).
+    "sherpa-onnx==1.12.39",
+    # The wheel loads this shared-library companion at runtime but does not
+    # declare it as an install dependency.
+    "sherpa-onnx-core==1.12.39",
 ]
 speaker-memory-mcp = [
     "mcp>=2,<3",
