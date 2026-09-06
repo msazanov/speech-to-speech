@@ -21,6 +21,7 @@ def add_device_context(instructions: str | None) -> str | None:
         age = time.time() - observed
         if not math.isfinite(age) or not -1 <= age <= 6:
             raise ValueError('Stale state')
+        json.dumps(data, allow_nan=False)
     except (OSError, ValueError, TypeError, KeyError):
         data = {'available': False, 'reason': 'Kodi state unavailable; call kodi_voice_state before answering about playback.'}
     payload = json.dumps(data, ensure_ascii=False, allow_nan=False).replace('<', '\\u003c').replace('>', '\\u003e')
