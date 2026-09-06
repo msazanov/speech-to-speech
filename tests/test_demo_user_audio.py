@@ -61,6 +61,38 @@ if (wav.getInt16(44, true) !== samples[1200]) {
     )
 
 
+def test_sdk_connect_uses_selected_model_so_initial_audio_config_is_accepted():
+    _run_node(
+        """
+import assert from 'node:assert/strict';
+globalThis.localStorage = {getItem() {return null;}};
+globalThis.CustomEvent = class extends Event {
+  constructor(type, init={}) {super(type); this.detail=init.detail;}
+};
+let seen;
+globalThis.OpenAIAgentsRealtime = {
+  OpenAIRealtimeWebSocket: class {on() {} sendEvent() {}},
+  RealtimeAgent: class {constructor(config) {this.config=config;}},
+  RealtimeSession: class {
+    constructor(agent, config) {seen={agent,config};}
+    on() {}
+    async connect() {}
+  },
+};
+const {S2sRealtimeClient} = await import('./demo/s2s-realtime-client.js');
+const client = new S2sRealtimeClient({
+  transport:'websocket', directUrl:'ws://unused', model:'gemma-4-e2b',
+  voice:'glados:Deep', instructions:'Русский ответ.', micStream:{getAudioTracks:()=>[{}]},
+});
+client._setupAudio = async () => {};
+await client.connect();
+assert.equal(seen.config.model, 'gemma-4-e2b');
+assert.equal(seen.agent.config.voice, 'glados:Deep');
+assert.equal(seen.config.config.audio.output.format.rate, 24000);
+"""
+    )
+
+
 def test_reopened_item_replaces_recording_with_accumulated_audio():
     _run_node(
         """

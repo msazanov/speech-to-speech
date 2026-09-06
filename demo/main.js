@@ -22,13 +22,14 @@ import { $, truncateError, DEBUG } from "./ui/dom.js";
 import { ChatView } from "./ui/chat.js";
 import { Account } from "./ui/account.js";
 import {
+  TTS_BACKENDS,
   decodeTtsSelection,
   encodeTtsSelection,
   voicesForTtsBackend,
 } from "./ui/tts-options.js";
 
-const DEFAULT_TTS_BACKEND = "silero";
-const DEFAULT_VOICE = "xenia";
+const DEFAULT_TTS_BACKEND = "glados";
+const DEFAULT_VOICE = "Neutral";
 const DEFAULT_INSTRUCTIONS = "You are a friendly voice assistant.";
 const DEFAULT_LLM_MODEL = "gemma-4-e2b";
 const DEFAULT_DIRECT_URL = "ws://127.0.0.1:8765";

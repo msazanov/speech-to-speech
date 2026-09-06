@@ -9,9 +9,9 @@ from speech_to_speech.pipeline.cancel_scope import CancelScope
 from speech_to_speech.pipeline.handler_types import TTSIn, TTSOut
 from speech_to_speech.pipeline.messages import EndOfResponse
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+from speech_to_speech.TTS.glados_tts_handler import GLADOS_STYLES, GladosTTSHandler
 from speech_to_speech.TTS.rhvoice_tts_handler import RHVOICE_RUSSIAN_VOICES, RHVoiceTTSHandler, _requested_voice
 from speech_to_speech.TTS.silero_tts_handler import SILERO_RUSSIAN_SPEAKERS, SileroTTSHandler
-from speech_to_speech.TTS.glados_tts_handler import GLADOS_STYLES, GladosTTSHandler
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +32,8 @@ def parse_local_voice(
         return "rhvoice", requested
     if requested in GLADOS_STYLES:
         return "glados", requested
-    if requested == "Aiden":
-        return "silero", "xenia"
+    if requested in {"Aiden", "alloy"}:
+        return fallback_backend, fallback_voice
     if requested:
         raise ValueError(f"Invalid local TTS selection {requested!r}")
     return fallback_backend, fallback_voice
@@ -73,6 +73,8 @@ class LocalTTSHandler(BaseHandler[TTSIn, TTSOut]):
         if default_backend not in {"silero", "rhvoice", "glados"}:
             raise ValueError("default_backend must be 'silero', 'rhvoice', or 'glados'")
         self.default_backend = default_backend
+        self.cancel_scope = cancel_scope
+        self.speculative_turns = speculative_turns
         self.default_silero_voice = silero_voice
         self.default_rhvoice_voice = rhvoice_voice
         self.default_glados_style = glados_style
@@ -106,15 +108,34 @@ class LocalTTSHandler(BaseHandler[TTSIn, TTSOut]):
         )
         self.glados = GladosTTSHandler.__new__(GladosTTSHandler)
         self.glados.setup(
-            should_listen, python=glados_python, workdir=glados_workdir, espeak_ng=glados_espeak_ng,
-            profile=glados_profile, style=glados_style, timeout=glados_timeout, blocksize=blocksize,
-            cancel_scope=cancel_scope, speculative_turns=speculative_turns,
+            should_listen,
+            python=glados_python,
+            workdir=glados_workdir,
+            espeak_ng=glados_espeak_ng,
+            profile=glados_profile,
+            style=glados_style,
+            timeout=glados_timeout,
+            blocksize=blocksize,
+            cancel_scope=cancel_scope,
+            speculative_turns=speculative_turns,
         )
+        if default_backend == "glados":
+            self.glados.warmup()
 
     def process(self, tts_input: TTSIn) -> Iterator[TTSOut]:
+        if (
+            not isinstance(tts_input, EndOfResponse)
+            and self.cancel_scope is not None
+            and tts_input.cancel_generation is not None
+            and self.cancel_scope.is_stale(tts_input.cancel_generation)
+        ):
+            return
         requested = None if isinstance(tts_input, EndOfResponse) else _requested_voice(tts_input)
-        fallback_voice = {"rhvoice": self.default_rhvoice_voice, "silero": self.default_silero_voice,
-                          "glados": self.default_glados_style}[self.default_backend]
+        fallback_voice = {
+            "rhvoice": self.default_rhvoice_voice,
+            "silero": self.default_silero_voice,
+            "glados": self.default_glados_style,
+        }[self.default_backend]
         backend, voice = parse_local_voice(requested, self.default_backend, fallback_voice)
         if backend == "silero":
             if voice not in SILERO_RUSSIAN_SPEAKERS:
@@ -128,13 +149,28 @@ class LocalTTSHandler(BaseHandler[TTSIn, TTSOut]):
             self.glados.style = voice
             try:
                 yield from self.glados.process(tts_input)
-            except RuntimeError:
+            except RuntimeError as exc:
                 # Keep the voice call usable if the RU-only frontend rejects an
-                # unexpected token. The error is logged by the GLaDOS handler.
-                logger.exception("GLaDOS TTS failed; using Silero fallback for this utterance")
+                # unexpected token. Avoid logging transcript-bearing exceptions.
+                if (
+                    self.cancel_scope is not None
+                    and tts_input.cancel_generation is not None
+                    and self.cancel_scope.is_stale(tts_input.cancel_generation)
+                ):
+                    return
+                logger.warning("GLaDOS TTS failed (%s); using Silero fallback", type(exc).__name__)
+                self.silero.speaker = self.default_silero_voice
                 yield from self.silero.process(tts_input)
             return
         if voice not in RHVOICE_RUSSIAN_VOICES:
             raise ValueError(f"Unsupported RHVoice Russian voice {voice!r}")
         self.rhvoice.voice = voice
         yield from self.rhvoice.process(tts_input)
+
+    def on_session_end(self) -> None:
+        self.silero.speaker = self.default_silero_voice
+        self.rhvoice.voice = self.default_rhvoice_voice
+        self.glados.style = self.default_glados_style
+
+    def cleanup(self) -> None:
+        self.glados.cleanup()

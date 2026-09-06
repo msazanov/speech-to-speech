@@ -201,7 +201,7 @@ export class S2sRealtimeClient extends EventTarget {
     this._agent = this._buildAgent();
     this._session = new RealtimeSession(this._agent, {
       transport: this._transport,
-      model: "s2s-local",
+      model: this.options.model,
       config: this._sessionConfig(),
       tracingDisabled: true,
     });

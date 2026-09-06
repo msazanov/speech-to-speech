@@ -26,11 +26,16 @@ import {
   voicesForTtsBackend,
 } from "./demo/ui/tts-options.js";
 
-assert.deepEqual(TTS_BACKENDS.map((item) => item.id), ["silero", "rhvoice"]);
+assert.deepEqual(TTS_BACKENDS.map((item) => item.id), ["glados", "silero", "rhvoice"]);
 assert.equal(encodeTtsSelection("silero", "xenia"), "silero:xenia");
 assert.equal(encodeTtsSelection("rhvoice", "Mikhail"), "rhvoice:Mikhail");
 assert.deepEqual(decodeTtsSelection("rhvoice:Pavel"), { backend: "rhvoice", voice: "Pavel" });
-assert.deepEqual(decodeTtsSelection("Aiden"), { backend: "silero", voice: "xenia" });
+assert.deepEqual(decodeTtsSelection(null), { backend: "glados", voice: "Neutral" });
+assert.deepEqual(decodeTtsSelection("Aiden"), { backend: "glados", voice: "Neutral" });
+for (const style of ["Neutral", "Standard", "Deep", "Light", "Standard_02"]) {
+  assert.equal(encodeTtsSelection("glados", style), `glados:${style}`);
+  assert.deepEqual(decodeTtsSelection(`glados:${style}`), { backend: "glados", voice: style });
+}
 assert.ok(voicesForTtsBackend("silero").some((voice) => voice.id === "aidar"));
 assert.ok(voicesForTtsBackend("rhvoice").some((voice) => voice.id === "Aleksandr"));
 assert.ok(!voicesForTtsBackend("rhvoice").some((voice) => /nikol/i.test(voice.id)));
