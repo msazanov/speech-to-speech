@@ -568,6 +568,7 @@ function setCaption(text, kind = "") {
 function openSettings() {
   syncConnectionUi();
   populateLlmOptions(settings.llmModel);
+  populateTtsBackendOptions(settings.ttsBackend);
   inputTtsBackend.value = settings.ttsBackend;
   populateVoiceOptions(settings.ttsBackend, settings.voice);
   inputVoice.value = settings.voice;
@@ -576,6 +577,20 @@ function openSettings() {
   updateRestartAvailability();
   void refreshAudioDeviceLists();
   settingsModal.showModal();
+}
+
+/** @param {string} selected */
+function populateTtsBackendOptions(selected = "") {
+  inputTtsBackend.replaceChildren();
+  for (const backend of TTS_BACKENDS) {
+    const option = document.createElement("option");
+    option.value = backend.id;
+    option.textContent = backend.label;
+    inputTtsBackend.append(option);
+  }
+  inputTtsBackend.value = TTS_BACKENDS.some((backend) => backend.id === selected)
+    ? selected
+    : TTS_BACKENDS[0].id;
 }
 
 /** @param {string} selected */
