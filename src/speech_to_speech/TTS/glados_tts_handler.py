@@ -84,7 +84,7 @@ class GladosTTSHandler(BaseHandler[TTSIn, TTSOut]):
         # The server's ONNX shared libraries must not override the worker venv's.
         for name in ("LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME"):
             env.pop(name, None)
-        env.update(GLADOS_ESPEAK_NG=self.espeak_ng, CUDA_VISIBLE_DEVICES="", OMP_NUM_THREADS="2", MKL_NUM_THREADS="2")
+        env.update(GLADOS_ESPEAK_NG=self.espeak_ng, CUDA_VISIBLE_DEVICES="", OMP_NUM_THREADS="6", MKL_NUM_THREADS="6")
         try:
             self._worker = subprocess.Popen(
                 [self.python, "-u", str(WORKER_PATH), "--profile", self.profile],
@@ -136,7 +136,14 @@ class GladosTTSHandler(BaseHandler[TTSIn, TTSOut]):
                 self.cleanup()
                 raise RuntimeError(f"GLaDOS startup failed: {reply.get('error', 'invalid reply')}")
             self._ready = True
-            logger.info("Native GLaDOS worker ready profile=%s device=cpu", self.profile)
+            logger.info(
+                "Native GLaDOS worker ready profile=%s device=cpu runtime=%s threads=%s accent_mode=%s startup_seconds=%s",
+                self.profile,
+                reply.get("runtime"),
+                reply.get("threads"),
+                reply.get("accent_mode"),
+                reply.get("startup_seconds"),
+            )
         return True
 
     def warmup(self):
