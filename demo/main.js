@@ -346,6 +346,7 @@ let toolsEnabled = loadTools();
 let serverSearchKey = false;
 /** Native server-side identity tools exposed by the pinned HuggingVoice service. */
 let speakerMemoryTools = [];
+let kodiTools = [];
 // A user-supplied key (fallback when the deploy has none). localStorage only.
 let userSearchKey = localStorage.getItem(STORAGE_KEYS.searchKey) || "";
 /** @type {MediaStream | null} */
@@ -362,6 +363,7 @@ function activeToolDefs() {
   if (toolsEnabled.web_search && searchAvailable()) defs.push(TOOL_DEFS.web_search);
   if (toolsEnabled.camera_snapshot) defs.push(TOOL_DEFS.camera_snapshot);
   defs.push(...speakerMemoryTools);
+  defs.push(...kodiTools);
   return defs;
 }
 
@@ -947,6 +949,9 @@ async function runTool(name, argsJson, callId) {
         console.warn("[tool] camera_snapshot: no frame — camera off or not ready");
         result.output = "The camera is not available right now.";
       }
+    } else if (kodiTools.some(tool => tool.name === name)) {
+      const { executeKodiTool } = await import('./kodi-tools.js');
+      result.output = await executeKodiTool(name, args);
     } else if (name.startsWith("speaker_memory_")) {
       if (!client.sessionId) throw new Error("realtime session id is not available");
       const response = await fetch("api/speaker-memory", {
@@ -1009,6 +1014,8 @@ async function fetchConfig() {
     if (res.ok) {
       const json = await res.json();
       serverSearchKey = !!json.search;
+      const { kodiToolDefinitions } = await import('./kodi-tools.js');
+      kodiTools = kodiToolDefinitions(json);
       speakerMemoryTools = Array.isArray(json.speakerMemoryTools)
         ? json.speakerMemoryTools.filter((tool) => tool?.name?.startsWith("speaker_memory_"))
         : [];
