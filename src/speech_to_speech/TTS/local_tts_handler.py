@@ -126,7 +126,13 @@ class LocalTTSHandler(BaseHandler[TTSIn, TTSOut]):
             if voice not in GLADOS_STYLES:
                 raise ValueError(f"Unsupported GLaDOS style {voice!r}")
             self.glados.style = voice
-            yield from self.glados.process(tts_input)
+            try:
+                yield from self.glados.process(tts_input)
+            except RuntimeError:
+                # Keep the voice call usable if the RU-only frontend rejects an
+                # unexpected token. The error is logged by the GLaDOS handler.
+                logger.exception("GLaDOS TTS failed; using Silero fallback for this utterance")
+                yield from self.silero.process(tts_input)
             return
         if voice not in RHVOICE_RUSSIAN_VOICES:
             raise ValueError(f"Unsupported RHVoice Russian voice {voice!r}")

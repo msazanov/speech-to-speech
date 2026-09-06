@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import wave
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 PIPELINE_SAMPLE_RATE = 16000
 GLADOS_STYLES = frozenset({"Neutral", "Standard", "Deep", "Light", "Standard_02"})
+_LATIN_GLADOS = re.compile(r"\bglados\b", re.IGNORECASE)
 
 
 class GladosTTSHandler(BaseHandler[TTSIn, TTSOut]):
@@ -78,6 +80,9 @@ class GladosTTSHandler(BaseHandler[TTSIn, TTSOut]):
             env = os.environ.copy()
             env["GLADOS_ESPEAK_NG"] = self.espeak_ng
             env["CUDA_VISIBLE_DEVICES"] = ""
+            # The native profile is Russian-only. Its frontend deliberately rejects
+            # Latin tokens; rewrite the one assistant name it commonly emits.
+            text = _LATIN_GLADOS.sub("Глэдос", text)
             command = [self.python, "-m", "glados_ru.run_verified_russian_glados", "--profile", self.profile,
                        "--text", text, "--style", style, "--output", str(output)]
             process = subprocess.Popen(command, cwd=self.workdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
@@ -99,7 +104,9 @@ class GladosTTSHandler(BaseHandler[TTSIn, TTSOut]):
                     raise RuntimeError(f"GLaDOS synthesis exceeded {self.timeout:.1f}s")
             _stdout, stderr = result["output"]
             if process.returncode:
-                raise RuntimeError(f"GLaDOS synthesis failed: {stderr.decode(errors='replace').strip()}")
+                detail = stderr.decode(errors="replace").strip()
+                logger.error("GLaDOS worker failed: %s", detail)
+                raise RuntimeError(f"GLaDOS synthesis failed: {detail}")
             return output.read_bytes()
 
     def process(self, tts_input: TTSIn) -> Iterator[TTSOut]:
