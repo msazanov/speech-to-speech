@@ -9,7 +9,8 @@ WorkingDirectory=/home/random/dev/huggingvoice
 Environment=PYTHONUNBUFFERED=1
 # sherpa-onnx dynamically links against the ONNX Runtime shared library.
 # Keep the project's local runtime discoverable after rebuilding `.venv`.
-Environment=LD_LIBRARY_PATH=/home/random/dev/huggingvoice/.venv/lib/python3.12/site-packages/onnxruntime/capi
+# Also expose CUDA 12 runtime libraries required by the qwentts.cpp GGML backend.
+Environment=LD_LIBRARY_PATH=/home/random/dev/huggingvoice/.venv/lib/python3.12/site-packages/onnxruntime/capi:/home/random/dev/huggingvoice/.venv/lib/python3.12/site-packages/nvidia/cu12/lib
 Environment=HF_HUB_OFFLINE=1
 Environment=TRANSFORMERS_OFFLINE=1
 # Comma-separated FreeToken model ids exposed in the browser selector. The
