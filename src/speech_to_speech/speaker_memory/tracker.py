@@ -93,6 +93,14 @@ class SpeakerTracker:
         top_score = scored[0][1] if scored else -1.0
         runner_up = scored[1][1] if len(scored) > 1 else -1.0
         voice_margin = top_score - runner_up
+        logger.info(
+            "Speaker acoustic scores top_voice=%s top=%.3f runner_up=%.3f margin=%.3f clusters=%d",
+            scored[0][0].id if scored else "none",
+            top_score,
+            runner_up,
+            voice_margin,
+            len(scored),
+        )
         if not scored or top_score < self.candidate_threshold:
             top_cluster = scored[0][0] if scored else None
             # A mature, still-unassigned cluster can absorb a weak outlier with

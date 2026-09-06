@@ -39,6 +39,7 @@ from speech_to_speech.arguments_classes.responses_api_language_model_arguments i
 from speech_to_speech.arguments_classes.rhvoice_tts_arguments import RHVoiceTTSHandlerArguments
 from speech_to_speech.arguments_classes.silero_tts_arguments import SileroTTSHandlerArguments
 from speech_to_speech.arguments_classes.supertonic_tts_arguments import SupertonicTTSHandlerArguments
+from speech_to_speech.arguments_classes.vosk_stt_arguments import VoskSTTHandlerArguments
 from speech_to_speech.arguments_classes.whisper_stt_arguments import WhisperSTTHandlerArguments
 from speech_to_speech.pipeline.cancel_scope import CancelScope
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
@@ -377,6 +378,18 @@ STT_BACKENDS = build_backend_registry(
             ),
             config_prefix="gigaam_onnx_stt",
             required_extra="gigaam",
+        ),
+        BackendSpec(
+            "vosk",
+            "stt",
+            VoskSTTHandlerArguments,
+            _simple_handler_factory(
+                "speech_to_speech.STT.vosk_handler",
+                "VoskSTTHandler",
+                attach_speculative_turns=True,
+            ),
+            config_prefix="vosk_stt",
+            required_extra="vosk",
         ),
         BackendSpec(
             "parakeet-tdt",

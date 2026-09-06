@@ -401,6 +401,72 @@ let client = null;
 let micStream = null;
 let micMuted = false;
 
+// ── ReSpeaker LED bridge ───────────────────────────────────────────────────
+// The browser owns the semantic state and both audio analysers. A small local
+// daemon owns GPIO and animation; this bridge only streams state, the CSS glow
+// colour, and RMS envelopes to it. Missing heartbeats make the daemon turn the
+// LEDs off, so a stopped web service can never leave stale illumination behind.
+const LED_FRAME_INTERVAL_MS = 50;
+
+function resolvedGlowColor() {
+  const probe = document.createElement("span");
+  probe.style.cssText = "display:none;color:var(--glow)";
+  circleBtn.appendChild(probe);
+  const channels = getComputedStyle(probe).color.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+  probe.remove();
+  return channels?.length === 3 ? channels.map((value) => Math.round(value)) : [0, 0, 0];
+}
+
+class LedBridge {
+  constructor() {
+    this.socket = null;
+    this.reconnectTimer = 0;
+    this.lastSentAt = 0;
+    this.payload = { state: "idle", color: [0, 0, 0], mic: 0, speaker: 0 };
+    this.connect();
+    window.setInterval(() => this.send(true), 500);
+  }
+
+  connect() {
+    if (this.socket?.readyState === WebSocket.OPEN || this.socket?.readyState === WebSocket.CONNECTING) return;
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(`${scheme}//${location.host}/device/led`);
+    this.socket = socket;
+    socket.addEventListener("open", () => this.send(true));
+    socket.addEventListener("close", () => {
+      if (this.socket === socket) this.socket = null;
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = window.setTimeout(() => this.connect(), 1000);
+    });
+    socket.addEventListener("error", () => socket.close());
+  }
+
+  setState(state) {
+    this.payload.state = state;
+    this.payload.color = resolvedGlowColor();
+    if (!LIVE_STATES.has(state)) {
+      this.payload.mic = 0;
+      this.payload.speaker = 0;
+    }
+    this.send(true);
+  }
+
+  setLevel(channel, rms) {
+    this.payload[channel] = Math.min(1, Math.max(0, Number(rms) || 0));
+    this.send(false);
+  }
+
+  send(force) {
+    const now = performance.now();
+    if (!force && now - this.lastSentAt < LED_FRAME_INTERVAL_MS) return;
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    this.socket.send(JSON.stringify(this.payload));
+    this.lastSentAt = now;
+  }
+}
+
+const ledBridge = new LedBridge();
+
 /** Apply both the user's mute choice and the temporary replay guard. */
 function syncMicMuteState() {
   const muted = micMuted || userAudioReplaying;
@@ -416,6 +482,7 @@ function setState(next) {
   const view = STATE_VIEWS[next];
   circleBtn.disabled = view.disabled;
   circleBtn.className = `circle ${STATE_CLASS[next]}`;
+  ledBridge.setState(next);
   if (next !== "error") setCaption(view.caption);
 
   const live = LIVE_STATES.has(next);
@@ -1566,6 +1633,11 @@ async function doStart(audioContext = null) {
   c.addEventListener("input-level", (e) => {
     const { rms } = /** @type {CustomEvent<{ rms: number }>} */ (e).detail;
     paintInputLevel(rms);
+    ledBridge.setLevel("mic", rms);
+  });
+  c.addEventListener("output-level", (e) => {
+    const { rms } = /** @type {CustomEvent<{ rms: number }>} */ (e).detail;
+    ledBridge.setLevel("speaker", rms);
   });
 
   try {

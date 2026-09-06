@@ -325,6 +325,7 @@ export class S2sRealtimeClient extends EventTarget {
       this._outAnalyser = output;
       this._visualiser = new OrbVisualiser(micAnalyser, output, () => this._aiSpeaking);
       this._visualiser.start();
+      this._levelTimer = window.setInterval(() => this._pollLevels(), 50);
     }
     await this.setAudioOutputDevice(this.options.audioOutputId || "");
   }
@@ -347,13 +348,20 @@ export class S2sRealtimeClient extends EventTarget {
     this._outAnalyser = output;
     this._visualiser = new OrbVisualiser(this._micAnalyser, output, () => this._aiSpeaking);
     this._visualiser.start();
-    this._levelTimer = window.setInterval(() => this._pollRtcLevels(), 50);
+    this._levelTimer = window.setInterval(() => this._pollLevels(), 50);
   }
 
-  _pollRtcLevels() {
-    const input = this._rms(this._micAnalyser);
-    this.dispatchEvent(new CustomEvent("input-level", { detail: { rms: input } }));
+  _pollLevels() {
+    // WS gets its mic level directly from the capture worklet. WebRTC has no
+    // capture worklet, so sample its analyser here instead.
+    if (this.options.transport === "webrtc") {
+      const input = this._rms(this._micAnalyser);
+      this.dispatchEvent(new CustomEvent("input-level", { detail: { rms: input } }));
+    }
     const output = this._rms(this._outAnalyser);
+    this.dispatchEvent(new CustomEvent("output-level", { detail: { rms: output } }));
+    if (this.options.transport !== "webrtc") return;
+
     const now = performance.now();
     if (output > Math.pow(10, SPEAKING_OPEN_DB / 20)) {
       this._lastAudibleAt = now;

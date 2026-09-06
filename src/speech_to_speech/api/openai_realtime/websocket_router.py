@@ -88,9 +88,9 @@ QItem = TypeVar("QItem")
 
 
 class SpeakerMemoryToolRequest(BaseModel):
-    """One browser tool call, authorized by an active realtime session."""
+    """One local-client tool call, authorized by an active realtime session."""
 
-    session_id: str = Field(min_length=4, max_length=160)
+    session_id: str | None = Field(default=None, min_length=4, max_length=160)
     name: str = Field(min_length=4, max_length=100)
     arguments: dict[str, Any]
 
@@ -545,16 +545,14 @@ def create_app(
         if request.name not in supported_names:
             raise HTTPException(status_code=400, detail="Unknown speaker-memory tool.")
 
-        unit = next(
-            (
-                candidate
-                for candidate in pool
-                if candidate.session is not None
-                and candidate.session.released_at is None
-                and candidate.session.session_id == request.session_id
-            ),
-            None,
-        )
+        active_units = [
+            candidate
+            for candidate in pool
+            if candidate.session is not None
+            and candidate.session.released_at is None
+            and (request.session_id is None or candidate.session.session_id == request.session_id)
+        ]
+        unit = active_units[0] if len(active_units) == 1 else None
         if unit is None:
             raise HTTPException(status_code=404, detail="Active realtime session not found.")
         handler = next(
