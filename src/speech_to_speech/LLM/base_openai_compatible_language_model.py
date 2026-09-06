@@ -629,6 +629,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         *,
         language_name: str | None = None,
     ) -> None:
+        from speech_to_speech.device_context import add_device_context
+        instructions = add_device_context(instructions)
         if not instructions and not language_name:
             return
         builder = build_voice_system_prompt if wants_audio else build_text_system_prompt
