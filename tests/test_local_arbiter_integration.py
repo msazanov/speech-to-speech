@@ -9,9 +9,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from openai.types.realtime.realtime_session_create_request import RealtimeSessionCreateRequest
 
 from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
-from speech_to_speech.LLM.chat import Chat, make_user_message
+from speech_to_speech.LLM.chat import Chat, make_assistant_message, make_user_message
 from speech_to_speech.LLM.chat_completions_language_model import ChatCompletionsApiModelHandler
-from speech_to_speech.pipeline.messages import EndOfResponse, GenerateResponseRequest, LLMResponseChunk
+from speech_to_speech.pipeline.messages import (
+    EndOfResponse,
+    GenerateResponseRequest,
+    LLMResponseChunk,
+    ResponsePrefetchTransaction,
+)
 
 
 class DelayedChatEndpoint:
@@ -62,9 +67,9 @@ class DelayedChatEndpoint:
                             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                         },
                     ]
-                    payload = b"".join(
-                        f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks
-                    ) + b"data: [DONE]\n\n"
+                    payload = (
+                        b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks) + b"data: [DONE]\n\n"
+                    )
                     content_type = "text/event-stream"
                 else:
                     response["object"] = "chat.completion"
@@ -150,3 +155,83 @@ def test_arbiter_timeout_does_not_retry_request() -> None:
     assert len(endpoint.requests) == 2  # one warmup plus one generation; no requeue/retry
     assert elapsed < 0.3
     assert any(isinstance(output, EndOfResponse) and output.error is not None for output in outputs)
+
+
+def make_external_agent_handler(endpoint: DelayedChatEndpoint) -> ChatCompletionsApiModelHandler:
+    return ChatCompletionsApiModelHandler(
+        threading.Event(),
+        queue.Queue(),
+        queue.Queue(),
+        setup_kwargs={
+            "model_name": "ignored-by-external-agent",
+            "base_url": endpoint.base_url,
+            "api_key": "local",
+            "stream": True,
+            "external_agent": True,
+            "compact_history": True,
+            "session_prefill_enabled": True,
+            "max_retries": 5,
+        },
+    )
+
+
+def make_external_agent_request(*, prefetch: bool = False) -> GenerateResponseRequest:
+    chat = Chat(8)
+    chat.add_item(make_user_message("old user text"))
+    chat.add_item(make_assistant_message("old assistant text"))
+    chat.add_item(
+        make_user_message(
+            '<huggingvoice_speaker_context>{"voice_id":"private"}</huggingvoice_speaker_context>\ncommitted words'
+        )
+    )
+    runtime_config = RuntimeConfig(
+        chat=chat,
+        session=RealtimeSessionCreateRequest(
+            type="realtime",
+            instructions="built-in prompt must not escape",
+            tools=[
+                {
+                    "type": "function",
+                    "name": "dangerous_tool",
+                    "description": "must not escape",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+        ),
+    )
+    return GenerateResponseRequest(
+        runtime_config=runtime_config,
+        trusted_transcript="committed words",
+        turn_id="turn-stable-42",
+        turn_revision=3,
+        prefetch_transaction=ResponsePrefetchTransaction() if prefetch else None,
+    )
+
+
+def test_external_agent_sends_one_raw_committed_turn_with_stable_identity() -> None:
+    with DelayedChatEndpoint(generation_delay_s=0) as endpoint:
+        handler = make_external_agent_handler(endpoint)
+
+        assert endpoint.requests == []
+        assert handler.max_retries == 0
+        assert handler.client.max_retries == 0
+        assert handler.compactor is None
+        assert handler.prefill_session("prompt", [], "auto", debounce_ms=0) is False
+
+        list(handler.process(make_external_agent_request()))
+
+    assert len(endpoint.requests) == 1
+    sent = endpoint.requests[0]
+    assert sent["messages"] == [{"role": "user", "content": "committed words"}]
+    assert sent["voice_turn_id"] == "turn-stable-42"
+    assert "tools" not in sent
+    assert "tool_choice" not in sent
+
+
+def test_external_agent_does_not_open_a_provider_request_for_prefetch() -> None:
+    with DelayedChatEndpoint(generation_delay_s=0) as endpoint:
+        handler = make_external_agent_handler(endpoint)
+
+        list(handler.process(make_external_agent_request(prefetch=True)))
+
+    assert endpoint.requests == []

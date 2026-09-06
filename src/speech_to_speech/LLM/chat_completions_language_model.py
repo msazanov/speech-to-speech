@@ -36,6 +36,8 @@ from speech_to_speech.LLM.base_openai_compatible_language_model import (
 )
 from speech_to_speech.LLM.chat import Chat
 from speech_to_speech.LLM.compaction_prompt import CompactGenerateFn
+from speech_to_speech.pipeline.handler_types import LLMIn, LLMOut
+from speech_to_speech.pipeline.messages import EndOfResponse
 from speech_to_speech.utils.utils import _generate_id
 
 logger = logging.getLogger(__name__)
@@ -288,7 +290,22 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
 
     supports_session_prefill = True
 
+    def setup(self, external_agent: bool = False, **kwargs: Any) -> None:
+        """Configure the normal provider client or an opt-in stateful external agent."""
+        self.external_agent = bool(external_agent)
+        self._external_agent_user_text: str | None = None
+        self._external_agent_turn_id: str | None = None
+        if self.external_agent:
+            # A stateful agent can perform irreversible work. Only real user turns
+            # may reach it, exactly once at the SDK layer.
+            kwargs["max_retries"] = 0
+            kwargs["session_prefill_enabled"] = False
+            kwargs["compact_history"] = False
+        super().setup(**kwargs)
+
     def warmup(self) -> None:
+        if self.external_agent:
+            return
         logger.info(f"Warming up {self.__class__.__name__}")
         start = time.time()
         configured_max_retries = getattr(self, "max_retries", None)
@@ -348,23 +365,72 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
     # ── base hooks ──────────────────────────────────────────────────────────--
 
     def _serialize(self, active_chat: Chat) -> list[dict[str, Any]]:
+        if self.external_agent:
+            if not self._external_agent_user_text:
+                return []
+            return [{"role": "user", "content": self._external_agent_user_text}]
         return self._chat_messages(active_chat, audio_content_type=self.audio_content_type)
 
     def _build_optional_kwargs(self, req_tools: Any, req_tool_choice: Any) -> dict[str, Any]:
         optional_kwargs = {key: value for key, value in self.gen_kwargs.items() if value is not None}
+        if self.external_agent:
+            return optional_kwargs
         optional_kwargs.update(_build_chat_optional_kwargs(req_tools, req_tool_choice))
         return optional_kwargs
 
     def _request(self, api_input: list[dict[str, Any]], optional_kwargs: dict[str, Any]) -> Any:
+        extra_body = self._extra_body
+        if self.external_agent:
+            extra_body = dict(extra_body or {})
+            extra_body["voice_turn_id"] = self._external_agent_turn_id
         return _request_chat_completions(
             client=self.client,
             model_name=self.model_name,
             messages=api_input,
             stream=self.stream,
-            extra_body=self._extra_body,
+            extra_body=extra_body,
             timeout=self.request_timeout,
             optional_kwargs=optional_kwargs,
         )
+
+    def process(self, request: LLMIn) -> Iterator[LLMOut]:
+        if not self.external_agent:
+            yield from super().process(request)
+            return
+        if request.prefetch_transaction is not None:
+            request.prefetch_transaction.discard()
+            yield EndOfResponse(
+                turn_id=request.turn_id,
+                turn_revision=request.turn_revision,
+                response_key=request.response_key,
+                cleanup_only=True,
+            )
+            return
+        if request.audio is not None or not request.trusted_transcript or not request.turn_id:
+            yield EndOfResponse(
+                turn_id=request.turn_id,
+                turn_revision=request.turn_revision,
+                response_key=request.response_key,
+                error="External-agent mode requires a committed text turn with a stable turn ID.",
+            )
+            return
+
+        self._external_agent_user_text = request.trusted_transcript
+        self._external_agent_turn_id = request.turn_id
+        try:
+            # External-agent mode must not execute HuggingVoice's local fast-tool
+            # shortcut; the remote agent exclusively owns tools and memory.
+            neutral_request = request.model_copy(
+                update={
+                    "forced_tool_call": None,
+                    "speaker_ref": None,
+                    "speaker": None,
+                }
+            )
+            yield from super().process(neutral_request)
+        finally:
+            self._external_agent_user_text = None
+            self._external_agent_turn_id = None
 
     def _perform_session_prefill(self, instructions: str, tools: Any, tool_choice: Any) -> None:
         """Issue a bounded, non-streaming request to populate the provider KV prefix."""

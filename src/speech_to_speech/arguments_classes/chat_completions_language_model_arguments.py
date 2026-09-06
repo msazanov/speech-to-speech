@@ -36,3 +36,11 @@ class ChatCompletionsLanguageModelHandlerArguments(ResponsesApiLanguageModelHand
         default=None,
         metadata={"help": "Sampling temperature for text Chat Completions requests. Default is provider-defined."},
     )
+    responses_api_external_agent: bool = field(
+        default=False,
+        metadata={
+            "help": "Treat the Chat Completions endpoint as the sole stateful agent. Sends only the current "
+            "committed user transcript plus voice_turn_id, with no HuggingVoice prompts, history, tools, "
+            "warmup, prefill, compaction, speculative prefetch, or SDK retries. Default is disabled."
+        },
+    )
