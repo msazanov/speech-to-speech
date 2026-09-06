@@ -281,6 +281,29 @@ def test_external_agent_commits_latest_revision_before_network_admission() -> No
     assert endpoint.requests == []
 
 
+def test_external_agent_cancel_during_commit_gate_prevents_network_admission() -> None:
+    tracker = SpeculativeTurnTracker()
+    tracker.observe("turn-stable-42", 3)
+    tracker.start_reopen_grace("turn-stable-42", 3, 0.35)
+    cancel_scope = CancelScope()
+    with DelayedChatEndpoint(generation_delay_s=0) as endpoint:
+        handler = make_external_agent_handler(
+            endpoint,
+            cancel_scope=cancel_scope,
+            speculative_turns=tracker,
+        )
+        worker = threading.Thread(target=lambda: list(handler.process(make_external_agent_request())))
+        worker.start()
+        time.sleep(0.04)
+
+        cancel_scope.cancel()
+
+        worker.join(timeout=0.6)
+
+    assert not worker.is_alive()
+    assert endpoint.requests == []
+
+
 class StallingExternalAgentEndpoint(DelayedChatEndpoint):
     def __init__(self, *, stall_before_headers: bool = False) -> None:
         self.requests = []

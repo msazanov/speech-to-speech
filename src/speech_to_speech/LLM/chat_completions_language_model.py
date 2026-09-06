@@ -298,7 +298,6 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         """Configure the normal provider client or an opt-in stateful external agent."""
         self.external_agent = bool(external_agent)
         self._external_agent_user_text: str | None = None
-        self._external_agent_turn_id: str | None = None
         self._external_agent_session_id = uuid4().hex
         self._external_agent_base_url = kwargs.get("base_url")
         if self.external_agent:
@@ -357,6 +356,8 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         def connect_and_read() -> None:
             api_response: Any = None
             try:
+                if stopped():
+                    return
                 api_response = request()
                 with response_lock:
                     connected_response.append(api_response)
@@ -378,9 +379,9 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         try:
             while True:
                 if self._turn_is_cancelled(turn):
-                    if not cancel_sent and self._external_agent_turn_id is not None:
+                    if not cancel_sent and turn.provider_request_id is not None:
                         cancel_sent = True
-                        self._cancel_external_agent_turn(self._external_agent_turn_id)
+                        self._cancel_external_agent_turn(turn.provider_request_id)
                     return
                 try:
                     succeeded, value = results.get(timeout=0.05)
@@ -475,10 +476,21 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         return optional_kwargs
 
     def _request(self, api_input: list[dict[str, Any]], optional_kwargs: dict[str, Any]) -> Any:
-        extra_body = self._extra_body
-        if self.external_agent:
-            extra_body = dict(extra_body or {})
-            extra_body["voice_turn_id"] = self._external_agent_turn_id
+        return _request_chat_completions(
+            client=self.client,
+            model_name=self.model_name,
+            messages=api_input,
+            stream=self.stream,
+            extra_body=self._extra_body,
+            timeout=self.request_timeout,
+            optional_kwargs=optional_kwargs,
+        )
+
+    def _request_for_turn(self, api_input: Any, optional_kwargs: dict[str, Any], turn: Any) -> Any:
+        if not self.external_agent:
+            return super()._request_for_turn(api_input, optional_kwargs, turn)
+        extra_body = dict(self._extra_body or {})
+        extra_body["voice_turn_id"] = turn.provider_request_id
         return _request_chat_completions(
             client=self.client,
             model_name=self.model_name,
@@ -493,6 +505,7 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         if not self.external_agent:
             yield from super().process(request)
             return
+        entry_generation = self.cancel_scope.generation if self.cancel_scope is not None else None
         if request.prefetch_transaction is not None:
             request.prefetch_transaction.discard()
             yield EndOfResponse(
@@ -523,8 +536,21 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
             )
             return
 
+        if (
+            entry_generation is not None
+            and self.cancel_scope is not None
+            and self.cancel_scope.is_stale(entry_generation)
+        ):
+            yield EndOfResponse(
+                turn_id=request.turn_id,
+                turn_revision=request.turn_revision,
+                response_key=request.response_key,
+                cleanup_only=True,
+            )
+            return
+
         self._external_agent_user_text = request.trusted_transcript
-        self._external_agent_turn_id = f"{self._external_agent_session_id}:{request.turn_id}"
+        provider_request_id = f"{self._external_agent_session_id}:{request.turn_id}"
         try:
             # External-agent mode must not execute HuggingVoice's local fast-tool
             # shortcut; the remote agent exclusively owns tools and memory.
@@ -533,12 +559,13 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
                     "forced_tool_call": None,
                     "speaker_ref": None,
                     "speaker": None,
+                    "cancel_generation": entry_generation,
+                    "provider_request_id": provider_request_id,
                 }
             )
             yield from super().process(neutral_request)
         finally:
             self._external_agent_user_text = None
-            self._external_agent_turn_id = None
 
     def _perform_session_prefill(self, instructions: str, tools: Any, tool_choice: Any) -> None:
         """Issue a bounded, non-streaming request to populate the provider KV prefix."""

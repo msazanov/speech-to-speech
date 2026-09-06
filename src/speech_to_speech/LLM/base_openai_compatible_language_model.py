@@ -124,6 +124,7 @@ class _Turn(BaseModel):
     speech_stopped_at_s: float | None
     wants_audio: bool
     response_key: str
+    provider_request_id: str | None = None
     prefetch_transaction: ResponsePrefetchTransaction | None = None
     # End of the conversation when this turn started; keeps its output ahead of
     # user messages appended while the model was still running.
@@ -319,6 +320,10 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
     def _request(self, api_input: Any, optional_kwargs: dict[str, Any]) -> Any:
         """Issue the create() call and return the response or stream."""
         ...
+
+    def _request_for_turn(self, api_input: Any, optional_kwargs: dict[str, Any], turn: _Turn) -> Any:
+        """Issue one provider request, with immutable per-turn metadata available to subclasses."""
+        return self._request(api_input, optional_kwargs)
 
     @abstractmethod
     def _iter_stream_events(self, api_response: Any) -> Iterator[ProviderEvent]:
@@ -1011,7 +1016,9 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                         nonlocal provider_request_started, provider_started_at_s
                         provider_request_started = True
                         provider_started_at_s = perf_counter()
-                        return (request_fn or self._request)(api_input, optional_kwargs)
+                        if request_fn is not None:
+                            return request_fn(api_input, optional_kwargs)
+                        return self._request_for_turn(api_input, optional_kwargs, turn)
 
                     if turn.forced_tool_call is not None:
                         provider_request_started = True
@@ -1213,7 +1220,9 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         turn_id = request.turn_id
         turn_revision = request.turn_revision
         speech_stopped_at_s = request.speech_stopped_at_s
-        gen = self.cancel_scope.generation if self.cancel_scope else None
+        gen = request.cancel_generation
+        if gen is None:
+            gen = self.cancel_scope.generation if self.cancel_scope else None
         if not self._turn_is_latest(turn_id, turn_revision):
             logger.info("Skipping stale LLM request for turn=%s rev=%s", turn_id, turn_revision)
             yield EndOfResponse(
@@ -1319,6 +1328,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             speech_stopped_at_s=speech_stopped_at_s,
             wants_audio=wants_audio,
             response_key=request.response_key,
+            provider_request_id=request.provider_request_id,
             prefetch_transaction=request.prefetch_transaction,
             history_anchor_id=history_anchor_id,
             forced_tool_call=request.forced_tool_call,
@@ -1348,7 +1358,9 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         turn_id = request.turn_id
         turn_revision = request.turn_revision
         speech_stopped_at_s = request.speech_stopped_at_s
-        gen = self.cancel_scope.generation if self.cancel_scope else None
+        gen = request.cancel_generation
+        if gen is None:
+            gen = self.cancel_scope.generation if self.cancel_scope else None
         if not self._turn_is_latest(turn_id, turn_revision):
             logger.info("Skipping stale LLM request for turn=%s rev=%s", turn_id, turn_revision)
             yield EndOfResponse(
@@ -1417,6 +1429,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             speech_stopped_at_s=speech_stopped_at_s,
             wants_audio=wants_audio,
             response_key=request.response_key,
+            provider_request_id=request.provider_request_id,
             prefetch_transaction=request.prefetch_transaction,
             history_anchor_id=history_anchor_id,
             forced_tool_call=request.forced_tool_call,

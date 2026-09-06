@@ -356,6 +356,8 @@ class GenerateResponseRequest(PipelineMessage):
     turn_id: str | None = None
     turn_revision: int | None = None
     speech_stopped_at_s: float | None = None
+    cancel_generation: int | None = Field(default=None, exclude=True, repr=False)
+    provider_request_id: str | None = Field(default=None, exclude=True, repr=False)
     prefetch_transaction: ResponsePrefetchTransaction | None = Field(default=None, exclude=True, repr=False)
     # A conservative local router can provide a structured tool call when a
     # provider returned prose instead of ``tool_calls``.
