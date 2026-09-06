@@ -39,6 +39,16 @@ _INTRO_STOP_WORDS = frozenset(
         "давай",
         "тебе",
         "тебя",
+        "говорю",
+        "думаю",
+        "знаю",
+        "считаю",
+        "делаю",
+        "смотрю",
+        "слушаю",
+        "работаю",
+        "живу",
+        "люблю",
         "here",
         "there",
         "trying",
@@ -128,7 +138,7 @@ def _intro_name(value: str) -> str:
     """Extract a short name from a punctuation-free STT introduction."""
 
     words = _clean(value).split()
-    if not words or words[0].casefold().strip(".,!?;:") in _INTRO_STOP_WORDS:
+    if not words or words[0].casefold().strip(".,!?;:") in (_INTRO_STOP_WORDS | _NAME_STOP_WORDS):
         return ""
     selected: list[str] = []
     for word in words:
@@ -139,6 +149,69 @@ def _intro_name(value: str) -> str:
         if len(selected) >= _MAX_NAME_WORDS:
             break
     return " ".join(selected)[:80]
+
+
+def explicit_name_from_utterance(utterance: str, *, allow_compact: bool = True) -> str:
+    """Extract only an explicit self-introduction from a trusted transcript."""
+
+    strong = re.match(
+        r"^\s*(?:меня\s+зовут|зовут\s+меня|мо[её]\s+имя(?:\s*[-—–:]\s*)?|"
+        r"my\s+name\s+is|call\s+me)\s+(.+?)\s*[.!?]*\s*$",
+        utterance,
+        flags=re.IGNORECASE,
+    )
+    if strong:
+        return _intro_name(strong.group(1))
+    if not allow_compact:
+        return ""
+    compact = re.match(
+        r"^\s*(?:я(?:\s+это)?|i(?:\s+am|'m))\s+(.+?)\s*[.!?]*\s*$",
+        utterance,
+        flags=re.IGNORECASE,
+    )
+    return _intro_name(compact.group(1)) if compact else ""
+
+
+def _is_plausible_name(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    cleaned = _clean(value)
+    return bool(cleaned) and _intro_name(cleaned).casefold() == cleaned.casefold()
+
+
+def is_explicit_identity_confirmation(utterance: str) -> bool:
+    return bool(
+        re.match(
+            r"^\s*(?:да|угу|верно|правильно|точно|это\s+я|yes|correct|right|that's\s+me)\s*[.!?]*\s*$",
+            utterance,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def is_explicit_identity_rejection(utterance: str) -> bool:
+    return bool(
+        re.match(
+            r"^\s*(?:нет(?:\s*,?\s*(?:не\s+я|это\s+не\s+я))?|не\s+я|это\s+не\s+я|неправильно|ошибка|"
+            r"no|not\s+me|wrong)\s*[.!?]*\s*$",
+            utterance,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def memory_assertion_matches(name: str, arguments: Mapping[str, Any], utterance: str) -> bool:
+    """Validate model mutations against the trusted text of the same turn."""
+
+    if name == "speaker_memory_remember_name":
+        proposed = arguments.get("name")
+        extracted = explicit_name_from_utterance(utterance)
+        return isinstance(proposed, str) and bool(extracted) and proposed.strip().casefold() == extracted.casefold()
+    if name == "speaker_memory_confirm":
+        return is_explicit_identity_confirmation(utterance)
+    if name == "speaker_memory_reject":
+        return is_explicit_identity_rejection(utterance)
+    return True
 
 
 def route_fast_tool(text: str, tools: Iterable[Any] | None) -> ResponseFunctionToolCall | None:
@@ -161,11 +234,9 @@ def route_fast_tool(text: str, tools: Iterable[Any] | None) -> ResponseFunctionT
         and person_id.strip()
         and state in {"ambiguous", "conflict"}
         and "speaker_memory_confirm" in names
-        and re.match(
-            r"^\s*(?:да|угу|верно|правильно|точно|это\s+я|yes|correct|right|that's\s+me)\s*[.!?]*\s*$",
-            utterance,
-            flags=re.IGNORECASE,
-        )
+        and isinstance(candidate, Mapping)
+        and _is_plausible_name(candidate.get("name"))
+        and is_explicit_identity_confirmation(utterance)
     ):
         return _call(
             "speaker_memory_confirm",
@@ -177,11 +248,7 @@ def route_fast_tool(text: str, tools: Iterable[Any] | None) -> ResponseFunctionT
         and person_id.strip()
         and state in {"ambiguous", "conflict"}
         and "speaker_memory_reject" in names
-        and re.match(
-            r"^\s*(?:нет(?:\s*,?\s*(?:не\s+я|это\s+не\s+я))?|не\s+я|это\s+не\s+я|неправильно|ошибка|no|not\s+me|wrong)\s*[.!?]*\s*$",
-            utterance,
-            flags=re.IGNORECASE,
-        )
+        and is_explicit_identity_rejection(utterance)
     ):
         return _call(
             "speaker_memory_reject",
@@ -189,15 +256,13 @@ def route_fast_tool(text: str, tools: Iterable[Any] | None) -> ResponseFunctionT
         )
 
     if speaker_ref and "speaker_memory_remember_name" in names:
-        match = re.match(
-            r"^\s*(?:меня\s+зовут|зовут\s+меня|мо[её]\s+имя(?:\s*[-—–:]\s*)?|я(?:\s+это)?|my\s+name\s+is|call\s+me|i(?:\s+am|'m))\s+(.+?)\s*[.!?]*\s*$",
-            utterance,
-            flags=re.IGNORECASE,
-        )
-        if match:
-            name = _intro_name(match.group(1))
-            if name:
-                return _call("speaker_memory_remember_name", {"speaker_ref": speaker_ref, "name": name})
+        # A compact "я Марат" is useful during enrolment, but on an already
+        # known voice it is too easy for punctuation-free STT text such as
+        # "я говорю ..." to look like a new name. Strong introductions remain
+        # available in every state for deliberate corrections.
+        name = explicit_name_from_utterance(utterance, allow_compact=state != "known")
+        if name:
+            return _call("speaker_memory_remember_name", {"speaker_ref": speaker_ref, "name": name})
 
     if speaker_ref and "speaker_memory_remember_fact" in names:
         match = re.match(

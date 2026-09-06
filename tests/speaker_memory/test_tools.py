@@ -112,6 +112,28 @@ async def test_confirm_rejects_person_not_proposed_for_reference(tool_runtime) -
 
 
 @pytest.mark.asyncio
+async def test_rejects_identity_mutation_not_supported_by_trusted_transcript(tool_runtime) -> None:
+    store, attributed = tool_runtime
+
+    result = await execute_tool(
+        "speaker_memory_remember_name",
+        {
+            "speaker_ref": attributed.speaker_ref,
+            "name": "говорю",
+            "_trusted_assertion_valid": False,
+        },
+    )
+
+    assert result.create_response is True
+    assert result.output == {
+        "ok": False,
+        "error": "speaker_assertion_not_explicit",
+        "recommendation": "ask_user_explicitly",
+    }
+    assert store.resolve_person_candidates(attributed.voice_id) == []
+
+
+@pytest.mark.asyncio
 async def test_database_lock_returns_bounded_retryable_tool_result(tool_runtime, monkeypatch) -> None:
     store, attributed = tool_runtime
     service = SpeakerMemoryService(store)

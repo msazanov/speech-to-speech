@@ -37,7 +37,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "speaker_memory_remember_name",
-        "description": "Remember a name explicitly given by the current speaker.",
+        "description": "Remember a name only from an explicit self-introduction in the current utterance.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -202,6 +202,18 @@ def _execute(
     speaker_ref = arguments.get("speaker_ref")
     if not isinstance(speaker_ref, str):
         raise ValueError("speaker_ref must be a string")
+    if (
+        name in {"speaker_memory_remember_name", "speaker_memory_confirm", "speaker_memory_reject"}
+        and arguments.get("_trusted_assertion_valid") is False
+    ):
+        return ToolResult(
+            output={
+                "ok": False,
+                "error": "speaker_assertion_not_explicit",
+                "recommendation": "ask_user_explicitly",
+            },
+            create_response=True,
+        )
     try:
         if name == "speaker_memory_inspect":
             attribution = service.inspect(speaker_ref, conversation_id=conversation_id)

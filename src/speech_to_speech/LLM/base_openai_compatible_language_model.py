@@ -130,6 +130,7 @@ class _Turn(BaseModel):
     history_anchor_id: str | None = None
     forced_tool_call: ResponseFunctionToolCall | None = None
     speaker_ref: str | None = None
+    trusted_transcript: str | None = None
 
 
 class _GenState(BaseModel):
@@ -672,7 +673,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
 
         Out-of-band turns never touch the default conversation, and a stale turn
         records nothing (it is not forwarded to the client either)."""
-        item = self._inject_speaker_ref(item, turn.speaker_ref)
+        item = self._inject_speaker_ref(item, turn.speaker_ref, turn.trusted_transcript)
         state.tools.append(item)
         fc_item = RealtimeConversationItemFunctionCall(
             type="function_call",
@@ -708,7 +709,11 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         yield self._chunk(turn, tools=[item])
 
     @staticmethod
-    def _inject_speaker_ref(item: ResponseFunctionToolCall, speaker_ref: str | None) -> ResponseFunctionToolCall:
+    def _inject_speaker_ref(
+        item: ResponseFunctionToolCall,
+        speaker_ref: str | None,
+        trusted_transcript: str | None = None,
+    ) -> ResponseFunctionToolCall:
         """Complete a model tool call with trusted turn metadata, never model data.
 
         A model-generated ``speaker_ref`` is untrusted: it may be stale or
@@ -725,6 +730,18 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         if not isinstance(arguments, dict):
             return item
         arguments["speaker_ref"] = speaker_ref
+        if trusted_transcript is not None and item.name in {
+            "speaker_memory_remember_name",
+            "speaker_memory_confirm",
+            "speaker_memory_reject",
+        }:
+            from speech_to_speech.LLM.fast_tool_router import memory_assertion_matches
+
+            arguments["_trusted_assertion_valid"] = memory_assertion_matches(
+                item.name,
+                arguments,
+                trusted_transcript,
+            )
         return item.model_copy(
             update={"arguments": json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))}
         )
@@ -1285,6 +1302,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             history_anchor_id=history_anchor_id,
             forced_tool_call=request.forced_tool_call,
             speaker_ref=request.speaker_ref,
+            trusted_transcript=request.trusted_transcript,
         )
         yield from self._generate(
             active_chat,
@@ -1382,6 +1400,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             history_anchor_id=history_anchor_id,
             forced_tool_call=request.forced_tool_call,
             speaker_ref=request.speaker_ref,
+            trusted_transcript=request.trusted_transcript,
         )
         yield from self._generate(active_chat, original_chat, turn, optional_kwargs)
 

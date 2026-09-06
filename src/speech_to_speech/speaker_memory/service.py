@@ -77,6 +77,22 @@ class SpeakerMemoryService:
         ]
         person = next((candidate for candidate in candidates if candidate.name.casefold() == normalized_name.casefold()), None)
         if person is None:
+            # An earlier mistaken rejection may hide the right person from the
+            # normal candidate list. A new explicit introduction with the same
+            # name is sufficient to recover that local relation instead of
+            # creating a duplicate person forever.
+            person = next(
+                (
+                    candidate
+                    for candidate in self.store.resolve_person_candidates(
+                        reference.voice_id,
+                        include_blocked=True,
+                    )
+                    if candidate.name.casefold() == normalized_name.casefold()
+                ),
+                None,
+            )
+        if person is None:
             created = self.store.create_person(normalized_name, reuse=False)
             person_id = created.id
         else:

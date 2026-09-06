@@ -37,6 +37,11 @@ def test_routes_name_introduction_using_only_trusted_reference() -> None:
     assert compact is not None and compact.name == "speaker_memory_remember_name"
     assert json.loads(compact.arguments) == {"speaker_ref": "sr_trusted", "name": "Марат"}
     assert route_fast_tool(with_speaker("я хочу поговорить"), TOOLS) is None
+    assert route_fast_tool(with_speaker("я говорю это было не смешно"), TOOLS) is None
+    assert route_fast_tool(with_speaker("я Марат", state="known"), TOOLS) is None
+    corrected = route_fast_tool(with_speaker("меня зовут Марат", state="known"), TOOLS)
+    assert corrected is not None
+    assert json.loads(corrected.arguments)["name"] == "Марат"
     named = route_fast_tool(with_speaker("моё имя — Тимур"), TOOLS)
     assert named is not None
     assert json.loads(named.arguments)["name"] == "Тимур"
@@ -58,6 +63,17 @@ def test_routes_name_introduction_using_only_trusted_reference() -> None:
     rejected = route_fast_tool(prefix + "Нет, это не я", TOOLS)
     assert rejected is not None and rejected.name == "speaker_memory_reject"
     assert json.loads(rejected.arguments) == {"speaker_ref": "sr_trusted", "person_id": "p_1"}
+
+    invalid_candidate_context = {
+        "speaker_ref": "sr_trusted",
+        "voice_id": "v_1",
+        "state": "conflict",
+        "candidate": {"person_id": "p_2", "name": "говорю"},
+    }
+    invalid_prefix = (
+        f"<huggingvoice_speaker_context>{json.dumps(invalid_candidate_context)}</huggingvoice_speaker_context>\n"
+    )
+    assert route_fast_tool(invalid_prefix + "Да", TOOLS) is None
 
 
 def test_routes_web_search_without_inventing_speaker_reference() -> None:

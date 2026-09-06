@@ -114,6 +114,25 @@ def test_same_name_from_new_voice_creates_separate_private_person(memory) -> Non
     assert service.recall(second.speaker_ref, query="чай", conversation_id="conv_1") == []
 
 
+def test_explicit_name_recovers_same_person_after_aliased_voice_was_rejected(memory) -> None:
+    store, tracker, service = memory
+    first = known_speaker(memory, vector=[1.0, 0.0], name="Аркадий", turn="turn_1")
+    identity = service.inspect(first.speaker_ref, conversation_id="conv_1")
+    assert identity.candidate is not None
+
+    rejected_variant = store.create_voice_cluster(np.asarray([0.0, 1.0], dtype=np.float32), quality=1.0)
+    store.block_voice_person(rejected_variant.id, identity.candidate.person_id, reason="mistaken rejection")
+    store.merge_voice_clusters(rejected_variant.id, first.voice_id, reason="explicit correction")
+
+    repeated = attributed(tracker, [1.0, 0.0], turn="turn_2")
+    assert service.inspect(repeated.speaker_ref, conversation_id="conv_1").candidate is None
+    recovered = service.remember_name(repeated.speaker_ref, "Аркадий", conversation_id="conv_1")
+
+    assert recovered.candidate is not None
+    assert recovered.candidate.person_id == identity.candidate.person_id
+    assert store.resolve_person_candidates(first.voice_id)[0].person_id == identity.candidate.person_id
+
+
 def test_explicit_fact_and_all_fact_forgetting(memory) -> None:
     _store, _tracker, service = memory
     speaker = known_speaker(memory)

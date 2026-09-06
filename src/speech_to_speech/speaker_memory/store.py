@@ -775,17 +775,38 @@ class SpeakerMemoryStore:
             )
 
     def clear_voice_person_block(self, voice_id: str, person_id: str) -> None:
+        canonical_id = self.resolve_voice_id(voice_id)
         with self._transaction():
             self._connection.execute(
-                "DELETE FROM voice_person_blocks WHERE voice_id = ? AND person_id = ?",
-                (voice_id, person_id),
+                """DELETE FROM voice_person_blocks
+                   WHERE person_id = ?
+                     AND (voice_id = ? OR voice_id IN (
+                         SELECT source_voice_id FROM voice_aliases
+                         WHERE canonical_voice_id = ?
+                     ))""",
+                (person_id, canonical_id, canonical_id),
             )
 
-    def resolve_person_candidates(self, voice_id: str) -> list[PersonCandidate]:
+    def resolve_person_candidates(
+        self,
+        voice_id: str,
+        *,
+        include_blocked: bool = False,
+    ) -> list[PersonCandidate]:
         canonical_id = self.resolve_voice_id(voice_id)
+        block_filter = "" if include_blocked else """
+                     AND NOT EXISTS (
+                         SELECT 1 FROM voice_person_blocks AS b
+                         WHERE b.person_id = e.person_id
+                           AND (b.voice_id = ? OR b.voice_id IN (
+                               SELECT source_voice_id FROM voice_aliases
+                               WHERE canonical_voice_id = ?
+                           ))
+                     )"""
+        block_arguments: tuple[str, ...] = () if include_blocked else (canonical_id, canonical_id)
         with self._lock:
             rows = self._connection.execute(
-                """SELECT p.id AS person_id, p.display_name,
+                f"""SELECT p.id AS person_id, p.display_name,
                           MAX(?, MIN(?, SUM(e.weight))) AS evidence_score
                    FROM voice_person_evidence AS e
                    JOIN persons AS p ON p.id = e.person_id
@@ -794,14 +815,7 @@ class SpeakerMemoryStore:
                           SELECT source_voice_id FROM voice_aliases
                           WHERE canonical_voice_id = ?
                       ))
-                     AND NOT EXISTS (
-                         SELECT 1 FROM voice_person_blocks AS b
-                         WHERE b.person_id = e.person_id
-                           AND (b.voice_id = ? OR b.voice_id IN (
-                               SELECT source_voice_id FROM voice_aliases
-                               WHERE canonical_voice_id = ?
-                           ))
-                     )
+                     {block_filter}
                    GROUP BY p.id, p.display_name
                    ORDER BY evidence_score DESC, p.id""",
                 (
@@ -809,8 +823,7 @@ class SpeakerMemoryStore:
                     self._MAX_EVIDENCE_SCORE,
                     canonical_id,
                     canonical_id,
-                    canonical_id,
-                    canonical_id,
+                    *block_arguments,
                 ),
             ).fetchall()
         return [

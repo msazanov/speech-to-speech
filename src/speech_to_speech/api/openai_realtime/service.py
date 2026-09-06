@@ -714,6 +714,7 @@ class RealtimeService:
                 speech_stopped_at_s=event.speech_stopped_at_s,
                 forced_tool_call=forced_tool_call,
                 speaker_ref=event.speaker.speaker_ref if event.speaker is not None else None,
+                trusted_transcript=transcript,
             )
             st.mark_response_pending(request.response_key)
             queue.put(request)
