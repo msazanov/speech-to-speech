@@ -1,11 +1,19 @@
 // @ts-check
 
 export const TTS_BACKENDS = Object.freeze([
+  { id: "glados", label: "GLaDOS RU (native)" },
   { id: "silero", label: "Silero v5.5 RU" },
   { id: "rhvoice", label: "RHVoice" },
 ]);
 
 const TTS_VOICES = Object.freeze({
+  glados: Object.freeze([
+    { id: "Neutral", label: "Neutral" },
+    { id: "Standard", label: "Standard" },
+    { id: "Deep", label: "Deep" },
+    { id: "Light", label: "Light" },
+    { id: "Standard_02", label: "Standard 02" },
+  ]),
   silero: Object.freeze([
     { id: "xenia", label: "Xenia" },
     { id: "kseniya", label: "Kseniya" },
@@ -46,5 +54,5 @@ export function decodeTtsSelection(raw) {
       return { backend: backend.id, voice: raw };
     }
   }
-  return { backend: "silero", voice: "xenia" };
+  return { backend: "glados", voice: "Neutral" };
 }

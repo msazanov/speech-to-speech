@@ -58,7 +58,7 @@
   "silero_tts_blocksize": 512,
   "silero_tts_english_fallback": true,
   "silero_tts_english_voice": "M1",
-  "local_tts_default_backend": "silero",
+  "local_tts_default_backend": "glados",
   "local_tts_silero_voice": "xenia",
   "local_tts_silero_sample_rate": 24000,
   "local_tts_silero_threads": 6,
@@ -72,5 +72,11 @@
   "local_tts_rhvoice_pitch": 100,
   "local_tts_rhvoice_volume": 100,
   "local_tts_blocksize": 512,
-  "local_tts_rhvoice_timeout": 15.0
+  "local_tts_rhvoice_timeout": 15.0,
+  "local_tts_glados_python": "/home/random/glados-tts/.venv/bin/python",
+  "local_tts_glados_workdir": "/home/random/orange-RAG",
+  "local_tts_glados_espeak_ng": "/home/random/glados-tts/espeak-ng/bin/espeak-ng",
+  "local_tts_glados_profile": "v3-1000",
+  "local_tts_glados_style": "Neutral",
+  "local_tts_glados_timeout": 90.0
 }

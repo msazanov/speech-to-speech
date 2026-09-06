@@ -6,8 +6,8 @@ from typing import Literal
 class LocalTTSHandlerArguments:
     """CPU-local TTS router configuration for per-session backend selection."""
 
-    local_tts_default_backend: Literal["silero", "rhvoice"] = field(
-        default="silero",
+    local_tts_default_backend: Literal["silero", "rhvoice", "glados"] = field(
+        default="glados",
         metadata={"help": "Default local TTS backend."},
     )
     local_tts_silero_voice: str = field(default="xenia", metadata={"help": "Default Silero RU voice."})
@@ -24,3 +24,9 @@ class LocalTTSHandlerArguments:
     local_tts_rhvoice_volume: int = field(default=100)
     local_tts_blocksize: int = field(default=512)
     local_tts_rhvoice_timeout: float = field(default=15.0)
+    local_tts_glados_python: str = field(default="/home/random/glados-tts/.venv/bin/python")
+    local_tts_glados_workdir: str = field(default="/home/random/orange-RAG")
+    local_tts_glados_espeak_ng: str = field(default="/home/random/glados-tts/espeak-ng/bin/espeak-ng")
+    local_tts_glados_profile: str = field(default="v3-1000")
+    local_tts_glados_style: str = field(default="Neutral")
+    local_tts_glados_timeout: float = field(default=90.0)
