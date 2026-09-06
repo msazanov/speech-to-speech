@@ -339,6 +339,19 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         else:
             yield from self._iter_response_events(api_response)
 
+    def _uses_interruptible_request(self, turn: _Turn) -> bool:
+        """Whether request creation and stream reads must run off the pipeline thread."""
+        return False
+
+    def _iter_request_events_interruptibly(
+        self,
+        request: Callable[[], Any],
+        event_iterator: Callable[[Any], Iterator[ProviderEvent]],
+        turn: _Turn,
+    ) -> Iterator[ProviderEvent]:
+        """Backend hook for side-effecting providers that require active cancellation."""
+        raise NotImplementedError
+
     @abstractmethod
     def _build_optional_kwargs(self, req_tools: Any, req_tool_choice: Any) -> dict[str, Any]:
         """Build the per-request tools/tool_choice kwargs in the backend's shape."""
@@ -1018,6 +1031,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                         events = iter(forced_events)
                     elif turn.prefetch_transaction is not None:
                         events = self._iter_prefetch_events_interruptibly(
+                            make_request,
+                            event_iterator_fn or self._iter_events,
+                            turn,
+                        )
+                    elif self._uses_interruptible_request(turn):
+                        events = self._iter_request_events_interruptibly(
                             make_request,
                             event_iterator_fn or self._iter_events,
                             turn,

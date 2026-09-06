@@ -11,12 +11,14 @@ from openai.types.realtime.realtime_session_create_request import RealtimeSessio
 from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
 from speech_to_speech.LLM.chat import Chat, make_assistant_message, make_user_message
 from speech_to_speech.LLM.chat_completions_language_model import ChatCompletionsApiModelHandler
+from speech_to_speech.pipeline.cancel_scope import CancelScope
 from speech_to_speech.pipeline.messages import (
     EndOfResponse,
     GenerateResponseRequest,
     LLMResponseChunk,
     ResponsePrefetchTransaction,
 )
+from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 
 
 class DelayedChatEndpoint:
@@ -157,7 +159,12 @@ def test_arbiter_timeout_does_not_retry_request() -> None:
     assert any(isinstance(output, EndOfResponse) and output.error is not None for output in outputs)
 
 
-def make_external_agent_handler(endpoint: DelayedChatEndpoint) -> ChatCompletionsApiModelHandler:
+def make_external_agent_handler(
+    endpoint: DelayedChatEndpoint,
+    *,
+    cancel_scope: CancelScope | None = None,
+    speculative_turns: SpeculativeTurnTracker | None = None,
+) -> ChatCompletionsApiModelHandler:
     return ChatCompletionsApiModelHandler(
         threading.Event(),
         queue.Queue(),
@@ -171,6 +178,8 @@ def make_external_agent_handler(endpoint: DelayedChatEndpoint) -> ChatCompletion
             "compact_history": True,
             "session_prefill_enabled": True,
             "max_retries": 5,
+            "cancel_scope": cancel_scope,
+            "speculative_turns": speculative_turns,
         },
     )
 
@@ -223,7 +232,7 @@ def test_external_agent_sends_one_raw_committed_turn_with_stable_identity() -> N
     assert len(endpoint.requests) == 1
     sent = endpoint.requests[0]
     assert sent["messages"] == [{"role": "user", "content": "committed words"}]
-    assert sent["voice_turn_id"] == "turn-stable-42"
+    assert sent["voice_turn_id"].endswith(":turn-stable-42")
     assert "tools" not in sent
     assert "tool_choice" not in sent
 
@@ -235,3 +244,135 @@ def test_external_agent_does_not_open_a_provider_request_for_prefetch() -> None:
         list(handler.process(make_external_agent_request(prefetch=True)))
 
     assert endpoint.requests == []
+
+
+def test_external_agent_namespaces_turn_ids_per_audio_session() -> None:
+    with DelayedChatEndpoint(generation_delay_s=0) as endpoint:
+        handler = make_external_agent_handler(endpoint)
+        list(handler.process(make_external_agent_request()))
+        first_id = endpoint.requests[-1]["voice_turn_id"]
+        list(handler.process(make_external_agent_request()))
+        repeated_id = endpoint.requests[-1]["voice_turn_id"]
+
+        handler.on_session_end()
+        list(handler.process(make_external_agent_request()))
+        second_id = endpoint.requests[-1]["voice_turn_id"]
+
+    assert first_id != second_id
+    assert repeated_id == first_id
+    assert first_id.endswith(":turn-stable-42")
+    assert second_id.endswith(":turn-stable-42")
+
+
+def test_external_agent_commits_latest_revision_before_network_admission() -> None:
+    tracker = SpeculativeTurnTracker()
+    tracker.observe("turn-stable-42", 3)
+    tracker.start_reopen_grace("turn-stable-42", 3, 0.2)
+    with DelayedChatEndpoint(generation_delay_s=0) as endpoint:
+        handler = make_external_agent_handler(endpoint, speculative_turns=tracker)
+        outputs: list[object] = []
+        worker = threading.Thread(target=lambda: outputs.extend(handler.process(make_external_agent_request())))
+        worker.start()
+        time.sleep(0.03)
+        tracker.observe("turn-stable-42", 4)
+        worker.join(timeout=0.5)
+
+    assert not worker.is_alive()
+    assert endpoint.requests == []
+
+
+class StallingExternalAgentEndpoint(DelayedChatEndpoint):
+    def __init__(self, *, stall_before_headers: bool = False) -> None:
+        self.requests = []
+        self.cancel_requests: list[dict] = []
+        self.cancel_authorizations: list[str | None] = []
+        self.request_admitted = threading.Event()
+        self.stream_accepted = threading.Event()
+        self.cancel_received = threading.Event()
+        self.stall_before_headers = stall_before_headers
+
+        endpoint = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("content-length", "0"))
+                body = json.loads(self.rfile.read(length))
+                if self.path == "/v1/voice/cancel":
+                    endpoint.cancel_requests.append(body)
+                    endpoint.cancel_authorizations.append(self.headers.get("authorization"))
+                    endpoint.cancel_received.set()
+                    payload = b'{"ok":true}'
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+
+                endpoint.requests.append(body)
+                endpoint.request_admitted.set()
+                if endpoint.stall_before_headers:
+                    endpoint.cancel_received.wait(2)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                self.wfile.flush()
+                endpoint.stream_accepted.set()
+                endpoint.cancel_received.wait(2)
+                payload = b"data: [DONE]\n\n"
+                try:
+                    self.wfile.write(f"{len(payload):x}\r\n".encode() + payload + b"\r\n0\r\n\r\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def log_message(self, _format: str, *_args: object) -> None:
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+
+def test_external_agent_cancel_posts_turn_id_while_stream_has_no_delta() -> None:
+    cancel_scope = CancelScope()
+    with StallingExternalAgentEndpoint() as endpoint:
+        handler = make_external_agent_handler(endpoint, cancel_scope=cancel_scope)
+        outputs: list[object] = []
+        worker = threading.Thread(target=lambda: outputs.extend(handler.process(make_external_agent_request())))
+        worker.start()
+        assert endpoint.stream_accepted.wait(0.5)
+        started = time.monotonic()
+
+        cancel_scope.cancel()
+
+        assert endpoint.cancel_received.wait(0.5)
+        worker.join(timeout=0.5)
+        elapsed = time.monotonic() - started
+
+    assert not worker.is_alive()
+    assert elapsed < 0.5
+    assert len(endpoint.requests) == 1
+    assert endpoint.cancel_requests == [{"voice_turn_id": endpoint.requests[0]["voice_turn_id"]}]
+    assert endpoint.cancel_authorizations == ["Bearer local"]
+
+
+def test_external_agent_cancel_reaches_adapter_during_response_creation() -> None:
+    cancel_scope = CancelScope()
+    with StallingExternalAgentEndpoint(stall_before_headers=True) as endpoint:
+        handler = make_external_agent_handler(endpoint, cancel_scope=cancel_scope)
+        worker = threading.Thread(target=lambda: list(handler.process(make_external_agent_request())))
+        worker.start()
+        assert endpoint.request_admitted.wait(0.5)
+
+        cancel_scope.cancel()
+
+        assert endpoint.cancel_received.wait(0.5)
+        worker.join(timeout=0.5)
+
+    assert not worker.is_alive()
+    assert len(endpoint.requests) == 1
+    assert endpoint.cancel_requests == [{"voice_turn_id": endpoint.requests[0]["voice_turn_id"]}]
+    assert endpoint.cancel_authorizations == ["Bearer local"]

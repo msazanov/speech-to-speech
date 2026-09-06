@@ -4,7 +4,11 @@ import json
 import logging
 import time
 from collections.abc import Iterator
+from queue import Empty, Full, Queue
+from threading import Event as ThreadingEvent
+from threading import Lock
 from typing import Any, cast
+from uuid import uuid4
 
 import httpx
 from openai import Stream
@@ -295,13 +299,105 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         self.external_agent = bool(external_agent)
         self._external_agent_user_text: str | None = None
         self._external_agent_turn_id: str | None = None
+        self._external_agent_session_id = uuid4().hex
+        self._external_agent_base_url = kwargs.get("base_url")
         if self.external_agent:
             # A stateful agent can perform irreversible work. Only real user turns
             # may reach it, exactly once at the SDK layer.
             kwargs["max_retries"] = 0
             kwargs["session_prefill_enabled"] = False
             kwargs["compact_history"] = False
+            kwargs["stream"] = True
         super().setup(**kwargs)
+
+    def _uses_interruptible_request(self, turn: Any) -> bool:
+        return self.external_agent and self.stream
+
+    def _cancel_external_agent_turn(self, voice_turn_id: str) -> None:
+        if not self._external_agent_base_url:
+            return
+        url = f"{str(self._external_agent_base_url).rstrip('/')}/voice/cancel"
+        headers = {"Authorization": f"Bearer {self.client.api_key}"}
+        try:
+            response = httpx.post(
+                url,
+                headers=headers,
+                json={"voice_turn_id": voice_turn_id},
+                timeout=min(2.0, self.request_timeout_s),
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            logger.warning("External-agent cancellation request failed: %s", exc)
+
+    def _iter_request_events_interruptibly(
+        self,
+        request: Any,
+        event_iterator: Any,
+        turn: Any,
+    ) -> Iterator[ProviderEvent]:
+        """Read one side-effecting stream while the pipeline thread watches cancellation."""
+        results: Queue[tuple[bool, Any]] = Queue(maxsize=16)
+        done = object()
+        stop_reader = ThreadingEvent()
+        response_lock = Lock()
+        connected_response: list[Any] = []
+
+        def stopped() -> bool:
+            return stop_reader.is_set() or self._turn_is_cancelled(turn)
+
+        def publish(result: tuple[bool, Any]) -> bool:
+            while not stopped():
+                try:
+                    results.put(result, timeout=0.05)
+                except Full:
+                    continue
+                return True
+            return False
+
+        def connect_and_read() -> None:
+            api_response: Any = None
+            try:
+                api_response = request()
+                with response_lock:
+                    connected_response.append(api_response)
+                if stopped():
+                    return
+                for event in event_iterator(api_response):
+                    if not publish((True, event)):
+                        return
+            except BaseException as exc:
+                publish((False, exc))
+            finally:
+                self._close_response(api_response)
+            publish((True, done))
+
+        worker = self._start_prefetch_worker(connect_and_read, name="external-agent-stream")
+        if worker is None:
+            raise RuntimeError("External-agent provider worker is already active")
+        cancel_sent = False
+        try:
+            while True:
+                if self._turn_is_cancelled(turn):
+                    if not cancel_sent and self._external_agent_turn_id is not None:
+                        cancel_sent = True
+                        self._cancel_external_agent_turn(self._external_agent_turn_id)
+                    return
+                try:
+                    succeeded, value = results.get(timeout=0.05)
+                except Empty:
+                    continue
+                if not succeeded:
+                    worker.join()
+                    raise value
+                if value is done:
+                    worker.join()
+                    return
+                yield value
+        finally:
+            stop_reader.set()
+            with response_lock:
+                api_response = connected_response[0] if connected_response else None
+            self._close_response(api_response)
 
     def warmup(self) -> None:
         if self.external_agent:
@@ -415,8 +511,20 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
             )
             return
 
+        if self.speculative_turns is not None and not self.speculative_turns.commit_if_latest_after_reopen_grace(
+            request.turn_id,
+            request.turn_revision,
+        ):
+            yield EndOfResponse(
+                turn_id=request.turn_id,
+                turn_revision=request.turn_revision,
+                response_key=request.response_key,
+                cleanup_only=True,
+            )
+            return
+
         self._external_agent_user_text = request.trusted_transcript
-        self._external_agent_turn_id = request.turn_id
+        self._external_agent_turn_id = f"{self._external_agent_session_id}:{request.turn_id}"
         try:
             # External-agent mode must not execute HuggingVoice's local fast-tool
             # shortcut; the remote agent exclusively owns tools and memory.
@@ -465,6 +573,7 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         yield from _tool_calls_from_accum(tool_accum)
 
     def on_session_end(self) -> None:
+        self._external_agent_session_id = uuid4().hex
         with self._session_prefill_lock:
             if self._session_prefill_timer is not None:
                 self._session_prefill_timer.cancel()
